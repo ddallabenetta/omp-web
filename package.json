@@ -1,6 +1,6 @@
 {
   "name": "omp-web",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "description": "Web view for the omp (oh-my-pi) coding agent CLI",
   "homepage": "https://github.com/ddallabenetta/omp-web#readme",
   "repository": {
@@ -52,11 +52,11 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@oh-my-pi/pi-agent-core": "~17.3.7",
-    "@oh-my-pi/pi-ai": "~17.3.7",
-    "@oh-my-pi/pi-coding-agent": "~17.3.7",
-    "@oh-my-pi/pi-tui": "~17.3.7",
-    "@oh-my-pi/pi-utils": "~17.3.7",
+    "@oh-my-pi/pi-agent-core": "~17.3.8",
+    "@oh-my-pi/pi-ai": "~17.3.8",
+    "@oh-my-pi/pi-coding-agent": "~17.3.8",
+    "@oh-my-pi/pi-tui": "~17.3.8",
+    "@oh-my-pi/pi-utils": "~17.3.8",
     "js-yaml": "^5.3.0",
     "next": "16.2.12",
     "proper-lockfile": "4.1.2",
