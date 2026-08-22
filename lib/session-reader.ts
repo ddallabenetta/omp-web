@@ -5,7 +5,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import type { AgentMessage as OmpAgentMessage } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens, estimateTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-core/compaction";
-import { closeSync, openSync, readSync } from "fs";
+import { closeSync, existsSync, openSync, readSync } from "fs";
 import { normalize as normalizePath } from "path";
 import type { AgentMessage, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
 import type { ContextUsage } from "./omp-types";
@@ -138,7 +138,8 @@ function getPathToIdCache(): Map<string, string> {
 
 export async function resolveSessionPath(sessionId: string): Promise<string | null> {
   const cached = getPathCache().get(sessionId);
-  if (cached) return cached;
+  if (cached && existsSync(cached)) return cached;
+  if (cached) invalidateSessionPathCache(sessionId);
 
   // Cache miss: scan all sessions to populate cache, then retry
   await listAllSessions();

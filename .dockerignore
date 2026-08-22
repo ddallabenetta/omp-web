@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!docker/
+!docker/omp-web-host.sh
