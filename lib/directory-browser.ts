@@ -64,7 +64,19 @@ export function getParentDirectory(directory: string): string | null {
 }
 
 export async function resolveDirectory(directory: string): Promise<string> {
-  return realpath(normalizeDirectory(directory));
+  return restoreDriveRootSeparator(await realpath(normalizeDirectory(directory)));
+}
+
+/**
+ * Bun's async `realpath()` drops the trailing separator on a Windows drive
+ * root: `realpath("C:\\")` resolves to `"C:"`, where Node resolves to `"C:\\"`.
+ * `"C:"` is a drive-relative path, so the `readdir()` that follows fails with
+ * ENOENT and the directory picker cannot open a drive. The sync and callback
+ * `realpath()` variants are unaffected, so this only has to patch the result
+ * back into an absolute path.
+ */
+export function restoreDriveRootSeparator(directory: string): string {
+  return /^[a-zA-Z]:$/.test(directory) ? `${directory}\\` : directory;
 }
 
 export async function listDirectories(directory: string): Promise<BrowsableDirectory[]> {
