@@ -8,7 +8,7 @@ const settingsSource = readFileSync(new URL("../components/SettingsConfig.tsx", 
 
 test("serves the render-affecting settings for the requested cwd", () => {
   assert.match(routeSource, /getSettingsForCwd\(cwd\)/);
-  assert.match(routeSource, /hideThinkingBlock: settings\.get\("hideThinkingBlock"\) === true/);
+  assert.match(routeSource, /hideThinkingBlock: getSetting\(settings, "hideThinkingBlock"\) === true/);
   // Same guards as the other settings-derived endpoints.
   assert.match(routeSource, /isApiRequestAllowed\(req\)/);
   assert.match(routeSource, /isExistingFilePathAllowed\(cwd, allowedRoots\)/);

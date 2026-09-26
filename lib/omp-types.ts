@@ -5,7 +5,8 @@ import type {
   SlashCommandInfo as OmpSlashCommandInfo,
   Theme,
 } from "@oh-my-pi/pi-coding-agent";
-import type { Goal, GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
+import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
+import type { Goal } from "@oh-my-pi/pi-tui/tools/goal";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "./types";
 
 

@@ -1,4 +1,5 @@
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
+import { getSetting } from "@/lib/omp-settings";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import {
   applyResolvedSystemPromptInputs,
   createAgentSession,
@@ -1782,7 +1783,7 @@ export async function startRpcSession(
       const systemPrompts = await resolveSessionSystemPrompts(sessionCwd);
 
       const { modelRegistry } = runtime;
-      const scope = await resolveVisibleModels(modelRegistry, settings.get("enabledModels"), settings);
+      const scope = await resolveVisibleModels(modelRegistry, getSetting<string[]>(settings, "enabledModels"), settings);
       const defaultRole = readDefaultModelRole(settings);
       const hasExistingMessages = sessionManager.buildSessionContext().messages.length > 0;
       const initial = hasExistingMessages

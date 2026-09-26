@@ -3,6 +3,7 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 import { getSettingsForCwd } from "@/lib/omp-runtime";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import type { DisplaySettings } from "@/lib/settings-api";
+import { getSetting } from "@/lib/omp-settings";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export async function GET(req: Request) {
     }
     const settings = await getSettingsForCwd(cwd);
     const payload: DisplaySettings = {
-      hideThinkingBlock: settings.get("hideThinkingBlock") === true,
+      hideThinkingBlock: getSetting(settings, "hideThinkingBlock") === true,
     };
     return NextResponse.json(payload);
   } catch (error) {

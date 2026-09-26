@@ -104,6 +104,26 @@ function getMissingBunMessage() {
   ].join("\n");
 }
 
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "::1"];
+
+/**
+ * Bun 1.4 started sending loopback requests through `HTTP_PROXY` too, which
+ * breaks local providers (ollama, lm-studio, llama.cpp) behind a proxy. Bun
+ * honors `NO_PROXY` for them, and reads the proxy environment only once at
+ * startup, so the launcher has to add loopback before Bun is spawned.
+ */
+function withLoopbackNoProxy(env) {
+  const proxied = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].some((name) => env[name]);
+  if (!proxied) return env;
+  const current = env.NO_PROXY ?? env.no_proxy ?? "";
+  if (current.trim() === "*") return env;
+  const entries = current.split(",").map((entry) => entry.trim()).filter(Boolean);
+  const missing = LOOPBACK_HOSTS.filter((host) => !entries.includes(host));
+  if (missing.length === 0) return env;
+  const value = [...entries, ...missing].join(",");
+  return { ...env, NO_PROXY: value, no_proxy: value };
+}
+
 module.exports = {
   MIN_BUN_VERSION,
   MIN_NODE_VERSION,
@@ -113,4 +133,5 @@ module.exports = {
   isBunVersionSupported,
   isNodeVersionSupported,
   resolveBunPath,
+  withLoopbackNoProxy,
 };

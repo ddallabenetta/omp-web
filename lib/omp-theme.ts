@@ -3,9 +3,10 @@ import {
   getResolvedThemeColors,
   getThemeExportColors,
   isLightTheme,
-} from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+} from "@oh-my-pi/pi-tui/theme/theme";
 import type { Settings } from "@oh-my-pi/pi-coding-agent";
 import type { WebThemeConfig, WebThemePalette } from "@/lib/settings-api";
+import { getSetting } from "@/lib/omp-settings";
 
 function firstColor(...values: Array<string | undefined>): string {
   return values.find((value) => typeof value === "string" && value.length > 0) ?? "transparent";
@@ -111,8 +112,8 @@ export async function getWebThemePalette(name: string): Promise<WebThemePalette>
 }
 
 export async function getWebThemeConfig(settings: Settings): Promise<WebThemeConfig> {
-  const dark = settings.get("theme.dark") ?? "titanium";
-  const light = settings.get("theme.light") ?? "light";
+  const dark = getSetting<string>(settings, "theme.dark") ?? "titanium";
+  const light = getSetting<string>(settings, "theme.light") ?? "light";
   const [darkPalette, lightPalette] = await Promise.all([
     getWebThemePalette(dark),
     getWebThemePalette(light),
