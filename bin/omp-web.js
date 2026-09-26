@@ -8,6 +8,7 @@ const {
   isBunVersionSupported,
   isNodeVersionSupported,
   resolveBunPath,
+  withLoopbackNoProxy,
   // eslint-disable-next-line @typescript-eslint/no-require-imports
 } = require("./runtime");
 
@@ -158,7 +159,7 @@ function startServer() {
     cwd: pkgDir,
     stdio: ["inherit", "pipe", "inherit"],
     env: {
-      ...process.env,
+      ...withLoopbackNoProxy(process.env),
       OMP_WEB_HOSTNAME: hostname,
       OMP_WEB_AUTH_FILE: webAuthFile,
       // Preserve the directory from which `omp-web` was launched so relative

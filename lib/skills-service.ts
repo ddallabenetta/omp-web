@@ -5,6 +5,7 @@ import type { SkillInfo, SkillsResponse } from "@/lib/api-types";
 import { annotateSkillsWithInstallInfo } from "@/lib/skill-lock";
 import { getProjectTrustStatus } from "@/lib/project-trust";
 import { getSettingsForCwd } from "@/lib/omp-runtime";
+import { getSkillsSettings } from "@/lib/omp-settings";
 
 /**
  * Skills exactly as an omp session would see them.
@@ -16,7 +17,7 @@ import { getSettingsForCwd } from "@/lib/omp-runtime";
 export async function loadSkillsWithInstallInfo(cwd: string): Promise<SkillsResponse> {
   const agentDir = getAgentDir();
   const settings = await getSettingsForCwd(cwd);
-  const { skills, warnings } = await loadSkills({ cwd, ...settings.getGroup("skills") });
+  const { skills, warnings } = await loadSkills({ cwd, ...getSkillsSettings(settings) });
 
   const infos: SkillInfo[] = skills.map((skill) => ({
     name: skill.name,

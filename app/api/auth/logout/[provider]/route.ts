@@ -14,12 +14,12 @@ export async function POST(
   }
 
   const { authStorage } = await getOmpRuntime();
-  const stored = authStorage.listStoredCredentials(provider);
+  const stored = authStorage.credentials.list(provider);
   if (stored.length > 0 && !stored.some((entry) => entry.credential.type === "oauth")) {
     return Response.json({ error: `${provider} is authenticated with an API key, not OAuth` }, { status: 409 });
   }
 
-  await authStorage.logout(provider);
+  await authStorage.credentials.remove(provider);
   invalidateModelsCache();
   invalidateOmpRuntime();
   return Response.json({ ok: true });
