@@ -10,6 +10,7 @@ import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { TerminalDropdown } from "./TerminalDropdown";
 import { TerminalViewer } from "./TerminalViewer";
+import { SystemStatsBadge } from "./SystemStatsBadge";
 import { SettingsConfig } from "./SettingsConfig";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
@@ -1302,6 +1303,7 @@ export function AppShell() {
               </button>
             </div>
           )}
+          <SystemStatsBadge />
           {/* Session stats — right-aligned in top bar */}
           {showChat && (sessionStats || contextUsage) && (() => {
              const tokens = sessionStats?.tokens;
