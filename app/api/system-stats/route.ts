@@ -5,21 +5,23 @@ import { performance } from "perf_hooks";
 export const dynamic = "force-dynamic";
 
 interface Sample {
-  // Total user+sys CPU time across all cores, in nanoseconds. Summed across
-  // cores because each line in /proc/stat's `cpu` block is one core.
-  cpuTotalNs: bigint;
+  // Non-idle CPU time summed across all cores, nanoseconds. Idle must be
+  // tracked separately: including it makes busy/total indistinguishable and
+  // pins the percentage at the cap whenever every core is mostly idle.
+  busyNs: bigint;
   // process.hrtime() for elapsed wall time, nanoseconds.
   elapsedNs: bigint;
 }
 
 function readSample(): Sample {
-  const cpus = os.cpus();
-  let total: bigint = BigInt(0);
-  for (const cpu of cpus) {
-    // times are in milliseconds (number), sum across cores.
-    total += BigInt(Math.round((cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq) * 1_000_000));
+  let busy: bigint = BigInt(0);
+  for (const cpu of os.cpus()) {
+    // times are in milliseconds (number). Node exposes no iowait, so busy is
+    // user + nice + sys + irq across every core.
+    const busyMs = cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.irq;
+    busy += BigInt(Math.round(busyMs * 1_000_000));
   }
-  return { cpuTotalNs: total, elapsedNs: process.hrtime.bigint() };
+  return { busyNs: busy, elapsedNs: process.hrtime.bigint() };
 }
 
 declare global {
@@ -37,21 +39,25 @@ export async function GET() {
   const freeMem = os.freemem();
   const usedMem = totalMem - freeMem;
 
+  const cores = os.cpus().length || 1;
+
   let cpuPercent: number | null = null;
   if (prev) {
-    const cpuDelta = Number(now.cpuTotalNs - prev.cpuTotalNs);
+    const busyDelta = Number(now.busyNs - prev.busyNs);
     const elapsedDelta = Number(now.elapsedNs - prev.elapsedNs);
-    if (elapsedDelta > 0 && cpuDelta > 0) {
-      // cpuDelta is total CPU ns across all cores; elapsedDelta is wall ns.
-      // percent = (cpuDelta / elapsedDelta) * 100, capped to [0, 100].
-      cpuPercent = Math.max(0, Math.min(100, (cpuDelta / elapsedDelta) * 100));
+    // busyDelta sums busy time across every core, so it must be divided by
+    // core count as well as by wall time to get per-machine utilisation.
+    if (elapsedDelta > 0 && busyDelta > 0) {
+      const raw = (busyDelta / elapsedDelta / cores) * 100;
+      cpuPercent = Math.max(0, Math.min(100, raw));
+    } else if (elapsedDelta > 0) {
+      cpuPercent = 0;
     }
   }
 
   const proc = process.memoryUsage();
 
   const loadAvg = os.loadavg();
-  const cores = os.cpus().length || 1;
 
   return NextResponse.json({
     cpuPercent,
