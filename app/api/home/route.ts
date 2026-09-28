@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { homedir } from "os";
+import os from "os";
+
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ home: homedir() });
+  return NextResponse.json({ home: os.homedir() });
 }
