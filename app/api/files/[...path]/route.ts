@@ -609,3 +609,93 @@ export async function GET(
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
+
+type WriteBody = { content?: unknown; expectedMtimeMs?: unknown };
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  if (!isApiRequestAllowed(request)) {
+    return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  }
+
+  try {
+    const { path: segments } = await params;
+    const filePath = filePathFromSegments(segments);
+    const allowedRoots = await getAllowedFileRoots();
+    if (!isExistingFilePathAllowed(filePath, allowedRoots)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      return NextResponse.json({ error: "Not a file" }, { status: 400 });
+    }
+    if (stat.size > TEXT_PREVIEW_MAX_BYTES) {
+      return NextResponse.json({ error: "File too large to edit in the browser (>256KB)" }, { status: 413 });
+    }
+
+    const body = await request.json().catch(() => null) as WriteBody | null;
+    if (typeof body?.content !== "string") {
+      return NextResponse.json({ error: "content must be a string" }, { status: 400 });
+    }
+    const expectedMtimeMs =
+      typeof body.expectedMtimeMs === "number" && Number.isFinite(body.expectedMtimeMs)
+        ? body.expectedMtimeMs
+        : null;
+    if (expectedMtimeMs !== null && Math.abs(stat.mtimeMs - expectedMtimeMs) > 0.5) {
+      return NextResponse.json(
+        {
+          error: "File changed on disk since you opened the editor",
+          conflict: true,
+          currentMtimeMs: stat.mtimeMs,
+          currentSize: stat.size,
+        },
+        { status: 409 },
+      );
+    }
+
+    // Reject writes through symlinks the same way the upload route does: the
+    // real target must still sit inside an allowed root, otherwise a symlinked
+    // file could redirect the write outside the sandbox.
+    const realPath = fs.realpathSync(filePath);
+    const realRoots = new Set<string>();
+    for (const root of allowedRoots) {
+      try { realRoots.add(fs.realpathSync(root)); } catch { /* stale root */ }
+    }
+    if (!isFilePathAllowed(realPath, realRoots)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    const bytes = Buffer.from(body.content, "utf-8");
+    // Atomic write: dump to a sibling temp file, then rename. If the process
+    // crashes mid-write the original file is intact.
+    const tempPath = `${filePath}.omp-web-${process.pid}-${Date.now()}.tmp`;
+    let tempHandle: string | null = null;
+    try {
+      fs.writeFileSync(tempPath, bytes, { flag: "wx" });
+      tempHandle = tempPath;
+      fs.renameSync(tempPath, filePath);
+      tempHandle = null;
+    } catch (error) {
+      if (tempHandle) {
+        try { fs.unlinkSync(tempHandle); } catch { /* best effort */ }
+      }
+      throw error;
+    }
+
+    const after = fs.statSync(filePath);
+    return NextResponse.json({
+      ok: true,
+      size: after.size,
+      mtimeMs: after.mtimeMs,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("ENOENT")) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
