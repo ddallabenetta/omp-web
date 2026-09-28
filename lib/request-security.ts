@@ -30,6 +30,12 @@ function isLoopbackHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname.endsWith(".localhost");
 }
 
+function matchesHostnamePattern(pattern: string, hostname: string): boolean {
+  if (pattern === hostname) return true;
+  if (pattern === "*") return true;
+  return pattern.startsWith("*.") && hostname.endsWith(pattern.slice(1));
+}
+
 function configuredHostnamesFromEnvironment(): string[] {
   return [
     process.env.OMP_WEB_HOSTNAME,
@@ -82,9 +88,10 @@ export function isApiRequestHostAllowed(
   if (!hostname) return false;
   if (isLoopbackHostname(hostname) || isIP(hostname)) return true;
 
-  return configuredHostnames.some(
-    (configured) => normalizeConfiguredHostname(configured) === hostname,
-  );
+  return configuredHostnames.some((configured) => {
+    const pattern = normalizeConfiguredHostname(configured);
+    return pattern ? matchesHostnamePattern(pattern, hostname) : false;
+  });
 }
 
 /** Reject browser cross-site API requests while preserving non-browser clients. */
