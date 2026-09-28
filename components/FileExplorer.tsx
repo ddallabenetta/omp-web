@@ -217,6 +217,7 @@ function TreeNode({
   onAtMention,
   expandedPaths,
   onToggleExpanded,
+  onNavigate,
   refreshToken,
   highlightedPaths,
   gitStatusByPath,
@@ -230,6 +231,7 @@ function TreeNode({
   onAtMention?: (relativePath: string, isDir: boolean) => void;
   expandedPaths: Set<string>;
   onToggleExpanded: (fullPath: string, open: boolean) => void;
+  onNavigate?: (fullPath: string) => void;
   refreshToken: string;
   highlightedPaths: Set<string>;
   gitStatusByPath: Map<string, GitFileStatus>;
@@ -272,13 +274,21 @@ function TreeNode({
 
   const handleClick = useCallback(() => {
     if (node.isDir) {
-      const next = !open;
-      onToggleExpanded(node.fullPath, next);
-      if (next && !loaded) loadChildren();
+      // Click on a directory navigates into it (replaces the explorer root
+      // view). The chevron handles expand/collapse instead, so this matches
+      // a typical file-manager: row click = open, chevron = peek.
+      onNavigate?.(node.fullPath);
     } else {
       onOpenFile(node.fullPath, node.name);
     }
-  }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded]);
+  }, [node.isDir, node.fullPath, node.name, onOpenFile, onNavigate]);
+
+  const handleChevronClick = useCallback((event: React.MouseEvent) => {
+    event.stopPropagation();
+    const next = !open;
+    onToggleExpanded(node.fullPath, next);
+    if (next && !loaded) loadChildren();
+  }, [loaded, loadChildren, node.fullPath, open, onToggleExpanded]);
 
   return (
     <div>
@@ -301,13 +311,21 @@ function TreeNode({
         }}
       >
         {node.isDir && (
-          <svg
-            width="10" height="10" viewBox="0 0 10 10" fill="none"
-            stroke="var(--text-dim)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-            style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.1s" }}
+          <span
+            role="button"
+            tabIndex={-1}
+            aria-label={open ? t("files.collapseFolder") : t("files.expandFolder")}
+            onClick={handleChevronClick}
+            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, flexShrink: 0, cursor: "pointer" }}
           >
+            <svg
+              width="10" height="10" viewBox="0 0 10 10" fill="none"
+              stroke="var(--text-dim)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+              style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.1s" }}
+            >
             <polyline points="3 2 7 5 3 8" />
           </svg>
+          </span>
         )}
         {!node.isDir && <span style={{ width: 10, flexShrink: 0 }} />}
         <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
@@ -457,6 +475,141 @@ function TreeNode({
   );
 }
 
+function Breadcrumb({
+  currentPath,
+  projectRoot,
+  homeDir,
+  onNavigate,
+  onNavigateUp,
+  onNavigateHome,
+}: {
+  currentPath: string;
+  projectRoot: string;
+  homeDir: string;
+  onNavigate: (fullPath: string) => void;
+  onNavigateUp: () => void;
+  onNavigateHome: () => void;
+}) {
+  const canGoUp = currentPath !== "/" && currentPath !== projectRoot && getFileDirectory(currentPath) !== currentPath;
+  const atHome = normalizeFilePathSlashes(currentPath) === normalizeFilePathSlashes(homeDir);
+  const atProjectRoot = normalizeFilePathSlashes(currentPath) === normalizeFilePathSlashes(projectRoot);
+  // Build segments by splitting the absolute path. Skip the leading empty
+  // entry from the leading slash so segment 0 is the first real directory.
+  const segments: Array<{ name: string; fullPath: string }> = [];
+  const parts = currentPath.split("/").filter(Boolean);
+  let running = currentPath.startsWith("/") ? "" : "";
+  for (const part of parts) {
+    running = running === "" && currentPath.startsWith("/") ? `/${part}` : `${running}/${part}`;
+    segments.push({ name: part, fullPath: running });
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        padding: "4px 4px 6px 8px",
+        fontSize: 11,
+        fontFamily: "var(--font-mono)",
+        color: "var(--text-muted)",
+        overflowX: "auto",
+        whiteSpace: "nowrap",
+        scrollbarWidth: "thin",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onNavigateHome}
+        disabled={atHome}
+        title={`Home (${homeDir})`}
+        aria-label={`Home directory ${homeDir}`}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 20,
+          height: 20,
+          padding: 0,
+          background: "transparent",
+          border: "none",
+          borderRadius: 4,
+          color: atHome ? "var(--text-dim)" : "var(--text-muted)",
+          cursor: atHome ? "default" : "pointer",
+          opacity: atHome ? 0.5 : 1,
+        }}
+        onMouseEnter={(event) => { if (!atHome) event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+          <polyline points="9 22 9 12 15 12 15 22" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={onNavigateUp}
+        disabled={!canGoUp}
+        title="Up one directory"
+        aria-label="Up one directory"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 20,
+          height: 20,
+          padding: 0,
+          background: "transparent",
+          border: "none",
+          borderRadius: 4,
+          color: canGoUp ? "var(--text-muted)" : "var(--text-dim)",
+          cursor: canGoUp ? "pointer" : "default",
+          opacity: canGoUp ? 1 : 0.4,
+          marginRight: 4,
+        }}
+        onMouseEnter={(event) => { if (canGoUp) event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m18 15-6-6-6 6" />
+        </svg>
+      </button>
+      {segments.map((segment, index) => {
+        const isLast = index === segments.length - 1;
+        return (
+          <span key={segment.fullPath} style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+            <button
+              type="button"
+              onClick={() => onNavigate(segment.fullPath)}
+              title={segment.fullPath}
+              style={{
+                padding: "1px 5px",
+                background: "transparent",
+                border: "none",
+                borderRadius: 3,
+                color: isLast ? "var(--text)" : "var(--text-muted)",
+                fontWeight: isLast ? 500 : 400,
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                cursor: "pointer",
+                maxWidth: 180,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              onMouseEnter={(event) => { if (!isLast) event.currentTarget.style.background = "var(--bg-hover)"; }}
+              onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+            >
+              {segment.name}
+            </button>
+            {!isLast && <span style={{ color: "var(--text-dim)" }}>/</span>}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 type OpenFileOptions = { sourceSessionId?: string | null; modeHint?: "diff" };
 
 type OpenFileHandler = (filePath: string, fileName: string, options?: OpenFileOptions) => void;
@@ -529,8 +682,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  // The directory currently shown at the top of the tree. Defaults to the
+  // `cwd` prop (the project root) and updates when the user navigates up or
+  // down via the breadcrumb, the Up button, or clicking a folder row. The
+  // external `cwd` prop is the project root and never changes from inside.
+  const [currentPath, setCurrentPath] = useState<string>(cwd);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
   const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
+  const [homeDir, setHomeDir] = useState<string>("/");
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [gitLineStats, setGitLineStats] = useState({ additions: 0, deletions: 0 });
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
@@ -570,6 +729,26 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       return next;
     });
   }, []);
+
+  const handleNavigate = useCallback((fullPath: string) => {
+    setCurrentPath(fullPath);
+    // Navigation collapses the previously expanded branches so the new
+    // starting point is a clean view; the user can re-expand from there.
+    setExpandedPaths(new Set());
+  }, []);
+
+  const handleNavigateUp = useCallback(() => {
+    setCurrentPath((prev) => {
+      const parent = getFileDirectory(prev);
+      return parent === prev ? prev : parent;
+    });
+    setExpandedPaths(new Set());
+  }, []);
+
+  const handleNavigateHome = useCallback(() => {
+    setCurrentPath(homeDir);
+    setExpandedPaths(new Set());
+  }, [homeDir]);
 
   const applyUploadResult = useCallback((data: UploadResponse) => {
     const uploaded = data.uploaded ?? [];
@@ -671,27 +850,52 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   useEffect(() => () => onUploadBusyChange?.(false), [onUploadBusyChange]);
 
   useEffect(() => {
+    let cancelled = false;
+    fetch("/api/home")
+      .then((res) => res.ok ? res.json() as Promise<{ home: string }> : null)
+      .then((data) => {
+        if (!cancelled && data?.home) setHomeDir(data.home);
+      })
+      .catch(() => { /* keep the default of `/` */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     const cwdChanged = prevCwdRef.current !== cwd;
     prevCwdRef.current = cwd;
 
-    // Reset expanded state only when cwd changes, not on refreshKey bumps
+    // Reset expanded state and snap navigation back to the project root
+    // when the externally-provided cwd changes (e.g. user picked a new
+    // project). Same trigger also clears uploads and highlights.
     if (cwdChanged) {
       setExpandedPaths(new Set());
       setHighlightedPaths(new Set());
       setUploadSummary(null);
       setPendingConflict(null);
       setUploadError(null);
+      setCurrentPath(cwd);
     }
 
     setLoading(cwdChanged);
     setError(null);
     let cancelled = false;
-    fetchEntries(cwd)
+    fetchEntries(currentPath)
       .then((entries) => { if (!cancelled) setRoots(entries); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey]);
+  }, [cwd, currentPath, refreshKey, treeRefreshKey]);
+
+  // Auto-refresh the listing every 5 seconds. Bumping treeRefreshKey
+  // re-runs the entry fetch above (and the git-status effect below) without
+  // disturbing navigation state — expanded paths, currentPath, and
+  // highlights all survive the round-trip.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTreeRefreshKey((key) => key + 1);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -876,23 +1080,34 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           ) : error ? (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>
           ) : (
-            roots.map((node) => (
-              <TreeNode
-                key={node.fullPath}
-                node={node}
-                depth={0}
-                cwd={cwd}
-                onOpenFile={onOpenFile}
-                onAtMention={onAtMention}
-                expandedPaths={expandedPaths}
-                onToggleExpanded={handleToggleExpanded}
-                refreshToken={refreshToken}
-                highlightedPaths={highlightedPaths}
-                gitStatusByPath={gitStatusByPath}
-                changedDirectoryPaths={changedDirectoryPaths}
-                t={t}
+            <>
+              <Breadcrumb
+                currentPath={currentPath}
+                projectRoot={cwd}
+                homeDir={homeDir}
+                onNavigate={handleNavigate}
+                onNavigateUp={handleNavigateUp}
+                onNavigateHome={handleNavigateHome}
               />
-            ))
+              {roots.map((node) => (
+                <TreeNode
+                  key={node.fullPath}
+                  node={node}
+                  depth={0}
+                  cwd={cwd}
+                  onOpenFile={onOpenFile}
+                  onAtMention={onAtMention}
+                  expandedPaths={expandedPaths}
+                  onToggleExpanded={handleToggleExpanded}
+                  onNavigate={handleNavigate}
+                  refreshToken={refreshToken}
+                  highlightedPaths={highlightedPaths}
+                  gitStatusByPath={gitStatusByPath}
+                  changedDirectoryPaths={changedDirectoryPaths}
+                  t={t}
+                />
+              ))}
+            </>
           )}
           {!loading && !error && roots.length === 0 && (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-dim)" }}>
