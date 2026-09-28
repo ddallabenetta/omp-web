@@ -124,7 +124,6 @@ export class TerminalManager {
     };
     this.terminals.set(id, record);
 
-    const decoder = new TextDecoder();
     const pipeOutput = async (stream: ReadableStream<Uint8Array>) => {
       try {
         const reader = stream.getReader();
