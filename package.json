@@ -57,6 +57,8 @@
     "@oh-my-pi/pi-coding-agent": "~18.1.17",
     "@oh-my-pi/pi-tui": "~18.1.17",
     "@oh-my-pi/pi-utils": "~18.1.17",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "js-yaml": "^5.4.1",
     "next": "16.2.12",
     "proper-lockfile": "4.1.2",

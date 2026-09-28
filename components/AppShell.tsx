@@ -8,6 +8,8 @@ import { SubagentPanel } from "./SubagentPanel";
 import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
+import { TerminalDropdown } from "./TerminalDropdown";
+import { TerminalViewer } from "./TerminalViewer";
 import { SettingsConfig } from "./SettingsConfig";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
@@ -658,7 +660,7 @@ export function AppShell() {
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff" },
+    options?: { sourceSessionId?: string | null; modeHint?: "diff" | "edit" },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
     const modeHint = options?.modeHint;
@@ -667,6 +669,7 @@ export function AppShell() {
       const existing = prev.find((t) => t.id === tabId);
       if (!existing) {
         return [...prev, {
+          kind: "file",
           id: tabId,
           label: fileName,
           filePath,
@@ -674,11 +677,12 @@ export function AppShell() {
           initialDisplayMode: modeHint,
         }];
       }
+      if (existing.kind !== "file") return prev;
       const sourceUnchanged = !sourceSessionId || existing.sourceSessionId === sourceSessionId;
       const modeUnchanged = !modeHint || existing.initialDisplayMode === modeHint;
       if (sourceUnchanged && modeUnchanged) return prev;
       return prev.map((t) => {
-        if (t.id !== tabId) return t;
+        if (t.id !== tabId || t.kind !== "file") return t;
         const next: Tab = { ...t };
         if (sourceSessionId) next.sourceSessionId = sourceSessionId;
         if (modeHint) next.initialDisplayMode = modeHint;
@@ -697,6 +701,13 @@ export function AppShell() {
 
   const handleCloseFileTab = useCallback((tabId: string) => {
     setFileTabs((prev) => {
+      const closing = prev.find((t) => t.id === tabId);
+      if (closing?.kind === "terminal") {
+        // Best-effort kill; the server cleans up regardless when the SSE
+        // consumer disconnects.
+        fetch(`/api/terminal/${encodeURIComponent(closing.terminalId)}`, { method: "DELETE" })
+          .catch(() => undefined);
+      }
       const next = prev.filter((t) => t.id !== tabId);
       if (next.length === 0) setRightPanelOpen(false);
       return next;
@@ -707,6 +718,18 @@ export function AppShell() {
       return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
     });
   }, [fileTabs]);
+
+  const handleOpenTerminalTab = useCallback((terminalId: string) => {
+    setFileTabs((prev) => {
+      const existing = prev.find((t) => t.kind === "terminal" && t.terminalId === terminalId);
+      if (existing) return prev;
+      const label = `Terminal ${terminalId.slice(0, 6)}`;
+      const newTab: Tab = { kind: "terminal", id: `terminal:${terminalId}`, label, terminalId };
+      return [...prev, newTab];
+    });
+    setActiveFileTabId(`terminal:${terminalId}`);
+    setRightPanelOpen(true);
+  }, []);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -1244,6 +1267,11 @@ export function AppShell() {
                 onToggle={() => toggleTopPanel("branches")}
                 hasSession
               />
+              <TerminalDropdown
+                cwd={activeCwd}
+                onOpenTerminal={handleOpenTerminalTab}
+                disabled={isMobile}
+              />
               <button
                 ref={systemBtnRef}
                 onClick={() => toggleTopPanel("system")}
@@ -1765,7 +1793,9 @@ export function AppShell() {
 
         {/* File content */}
         <div style={{ flex: 1, overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
-          {activeFileTab?.filePath ? (
+          {activeFileTab?.kind === "terminal" ? (
+            <TerminalViewer terminalId={activeFileTab.terminalId} />
+          ) : activeFileTab?.kind === "file" ? (
             <FileViewer
               filePath={activeFileTab.filePath}
               cwd={activeCwd ?? undefined}
