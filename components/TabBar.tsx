@@ -4,13 +4,23 @@ import { useState } from "react";
 import { getFileIcon } from "./FileIcons";
 import { useI18n } from "@/hooks/useI18n";
 
-export interface Tab {
+export interface FileTab {
+  kind: "file";
   id: string;
   label: string;
   filePath: string;
   sourceSessionId?: string | null;
-  initialDisplayMode?: "source" | "preview" | "diff";
+  initialDisplayMode?: "source" | "preview" | "diff" | "edit";
 }
+
+export interface TerminalTab {
+  kind: "terminal";
+  id: string;
+  label: string;
+  terminalId: string;
+}
+
+export type Tab = FileTab | TerminalTab;
 
 interface Props {
   tabs: Tab[];
@@ -79,7 +89,7 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
                 flex: 1,
                 fontWeight: isActive ? 500 : 400,
               }}
-              title={tab.filePath}
+              title={tab.kind === "file" ? tab.filePath : `Terminal · ${tab.label}`}
             >
               {tab.label}
             </span>

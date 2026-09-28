@@ -45,12 +45,13 @@ interface FileData {
   size: number;
 }
 
-type DisplayMode = "source" | "preview" | "diff";
+type DisplayMode = "source" | "preview" | "diff" | "edit";
 
 const DISPLAY_MODE_LABELS: Record<DisplayMode, string> = {
   source: "Source",
   preview: "Preview",
   diff: "Diff",
+  edit: "Edit",
 };
 
 const FILE_CODE_STYLE: CSSProperties = {
@@ -815,6 +816,11 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const gitDiffRequestRef = useRef(0);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [selectedLineRange, setSelectedLineRange] = useState<SelectedLineRange | null>(null);
+  const [editDraft, setEditDraft] = useState<string | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editConflict, setEditConflict] = useState<{ mtimeMs: number; size: number } | null>(null);
+  const editSavedMtimeRef = useRef<number | null>(null);
 
   const fetchContent = useCallback((filePath: string) => {
     return fetch(getFileApiUrl(filePath, "read", sourceSessionId))
@@ -865,6 +871,11 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     setDisplayMode("source");
     setWrapLines(false);
     setWatching(false);
+    setEditDraft(null);
+    setEditError(null);
+    setEditConflict(null);
+    setEditSaving(false);
+    editSavedMtimeRef.current = null;
 
     if (esRef.current) {
       esRef.current.close();
@@ -968,6 +979,48 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     return () => document.removeEventListener("selectionchange", updateSelectedLineRange);
   }, [data?.content, displayMode, onMentionLines]);
 
+  const saveEdit = useCallback(async () => {
+    if (editDraft === null || editSaving) return;
+    setEditSaving(true);
+    setEditError(null);
+    setEditConflict(null);
+    const expectedMtimeMs = editSavedMtimeRef.current;
+    try {
+      const encoded = encodeFilePathForApi(filePath);
+      const res = await fetch(`/api/files/${encoded}?type=write`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editDraft, expectedMtimeMs }),
+      });
+      const json = await res.json().catch(() => ({})) as {
+        ok?: boolean;
+        size?: number;
+        mtimeMs?: number;
+        error?: string;
+        conflict?: boolean;
+        currentMtimeMs?: number;
+        currentSize?: number;
+      };
+      if (!res.ok) {
+        if (json.conflict) {
+          setEditConflict({ mtimeMs: json.currentMtimeMs ?? 0, size: json.currentSize ?? 0 });
+          setEditError(json.error ?? "File changed on disk");
+        } else {
+          setEditError(json.error ?? `Save failed (${res.status})`);
+        }
+        return;
+      }
+      editSavedMtimeRef.current = json.mtimeMs ?? null;
+      setEditDraft(null);
+      await fetchContent(filePath);
+      void fetchGitDiff(filePath);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editDraft, editSaving, fetchContent, fetchGitDiff, filePath]);
+
   const mentionLineRange = useCallback((lineRange: SelectedLineRange | null) => {
     if (!onMentionLines || !lineRange) return;
     onMentionLines(
@@ -1029,8 +1082,11 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     : [
         "source",
         ...(hasPreview ? ["preview" as const] : []),
+        "edit",
         ...(hasGitDiff ? ["diff" as const] : []),
       ];
+  const editDirty = editDraft !== null && editDraft !== content;
+  const editCanSave = editDirty && !editSaving && !isDeletedDiff && editConflict === null;
   const metadata = isDeletedDiff
     ? t("files.deleted")
     : `${language} · ${lines.length} lines · ${formatSize(data!.size)}`;
@@ -1143,6 +1199,56 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
                 </button>
               </>
             )}
+            {effectiveDisplayMode === "edit" && (
+              <>
+                {editDirty && (
+                  <span
+                    title="Unsaved changes"
+                    aria-label="Unsaved changes"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: "#fbbf24",
+                      boxShadow: "0 0 4px #fbbf24",
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditDraft(null);
+                    setEditError(null);
+                    setEditConflict(null);
+                  }}
+                  disabled={!editDirty || editSaving}
+                  title="Discard changes"
+                  aria-label="Discard changes"
+                  className="file-viewer-icon-button"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 12a9 9 0 1 0 3-6.7" />
+                    <path d="M3 4v5h5" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveEdit()}
+                  disabled={!editCanSave}
+                  title={editSaving ? "Saving…" : "Save (Ctrl+S)"}
+                  aria-label="Save"
+                  className="file-viewer-icon-button"
+                  style={{
+                    background: editDirty ? "var(--accent)" : "transparent",
+                    color: editDirty ? "var(--accent-fg, #fff)" : "var(--text-muted)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {editSaving ? "…" : "Save"}
+                </button>
+              </>
+            )}
           </div>
 
           {!isDeletedDiff && <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />}
@@ -1225,6 +1331,74 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
             >
               {markdownPreview}
             </ReactMarkdown>
+          </div>
+        ) : effectiveDisplayMode === "edit" ? (
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            {(editError || editConflict) && (
+              <div
+                role="alert"
+                style={{
+                  padding: "8px 16px",
+                  borderBottom: "1px solid var(--border)",
+                  background: "rgba(248, 113, 113, 0.1)",
+                  color: "#f87171",
+                  fontSize: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  flexShrink: 0,
+                }}
+              >
+                <span style={{ flex: 1 }}>{editError ?? "File changed on disk since you started editing."}</span>
+                {editConflict && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await fetchContent(filePath);
+                      setEditDraft(null);
+                      setEditConflict(null);
+                      setEditError(null);
+                    }}
+                    className="file-viewer-icon-button"
+                    style={{ padding: "2px 10px", height: 22, fontSize: 11 }}
+                  >
+                    Reload from disk
+                  </button>
+                )}
+              </div>
+            )}
+            <textarea
+              autoFocus
+              spellCheck={false}
+              value={editDraft ?? content}
+              onChange={(event) => {
+                setEditDraft(event.target.value);
+                if (editConflict) setEditConflict(null);
+              }}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && !event.altKey && !event.shiftKey) {
+                  event.preventDefault();
+                  if (editCanSave) void saveEdit();
+                }
+              }}
+              style={{
+                flex: 1,
+                width: "100%",
+                padding: "16px 20px",
+                margin: 0,
+                border: 0,
+                outline: "none",
+                resize: "none",
+                background: "var(--bg)",
+                color: "var(--text)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 13,
+                lineHeight: 1.6,
+                tabSize: 2,
+                whiteSpace: wrapLines ? "pre-wrap" : "pre",
+                overflow: "auto",
+              }}
+            />
           </div>
         ) : (
           <SyntaxHighlighter

@@ -89,7 +89,7 @@ interface Props {
   onSessionDeleted?: (sessionId: string) => void;
   selectedCwd?: string | null;
   onCwdChange?: (cwd: string | null, projectRoot?: string | null) => void;
-  onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" }) => void;
+  onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" | "edit" }) => void;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -1015,7 +1015,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
           <div style={{ display: "flex", gap: 6 }}>
             <button
               onClick={() => handleNewSession()}
-              disabled={!selectedCwd}
+              disabled={!selectedCwd || undefined}
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
                 background: "var(--bg-hover)",
