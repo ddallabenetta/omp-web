@@ -492,7 +492,6 @@ function Breadcrumb({
 }) {
   const canGoUp = currentPath !== "/" && currentPath !== projectRoot && getFileDirectory(currentPath) !== currentPath;
   const atHome = normalizeFilePathSlashes(currentPath) === normalizeFilePathSlashes(homeDir);
-  const atProjectRoot = normalizeFilePathSlashes(currentPath) === normalizeFilePathSlashes(projectRoot);
   // Build segments by splitting the absolute path. Skip the leading empty
   // entry from the leading slash so segment 0 is the first real directory.
   const segments: Array<{ name: string; fullPath: string }> = [];
