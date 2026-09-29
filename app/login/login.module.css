@@ -1,0 +1,127 @@
+.page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.card {
+  width: 100%;
+  max-width: 470px;
+  padding: 26px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-panel);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.title {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.lead, .aside, .error {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.lead { color: var(--text-muted); }
+.aside { color: var(--text-dim); }
+.error { color: var(--danger); }
+
+.lead code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.aside a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.aside a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+.field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-muted);
+}
+
+/* The reveal button sits inside the field, so the border wraps both. */
+.control {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.control:focus-within { border-color: var(--accent); }
+
+.input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: 12px var(--font-mono);
+}
+
+.input:focus { outline: none; }
+.input:disabled { opacity: .6; }
+
+.reveal {
+  flex: none;
+  padding: 0 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: 650 10px var(--font-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.reveal:hover { color: var(--text); }
+
+.primary {
+  display: block;
+  width: 100%;
+  height: 36px;
+  margin-bottom: 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  font: 700 11px var(--font-mono);
+  line-height: 36px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.primary:disabled { cursor: not-allowed; opacity: .5; }
