@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { resolveWebAuthPolicy, type WebAuthStoreOptions } from "../bin/web-auth-store.js";
+import { getExpectedUsername } from "./web-auth";
 
 /**
  * Signed session cookies for the web lock.
@@ -23,11 +24,22 @@ export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const SESSION_VERSION = "1";
 
 /**
- * Fixed salt. The derived key is secret because the *password* is secret, not
- * because the salt is: there is one credential per server, the key never leaves
- * the process, and a per-user salt would buy nothing.
+ * Per-process boot salt. The cookie carries no salt, so the only way an old
+ * cookie survives a restart is if this salt stays put — which it cannot,
+ * because randomBytes regenerates it on every cold start. Sessions minted by a
+ * previous instance therefore stop verifying until the browser logs in again,
+ * even though the credential itself did not change.
+ *
+ * The key is secret because the credential is secret, not because the salt is.
+ * Rotating the password already invalidates sessions through the secret
+ * itself; this salt is what kills cookies on a plain restart, so together they
+ * bind a cookie to (username, password, process) and it cannot outlive the run
+ * that minted it.
  */
-const KEY_SALT = "omp.web.session.v1";
+const KEY_SALT = randomBytes(32).toString("base64url");
+
+/** Exported so the expiry test can forge a correctly signed cookie. */
+export const __testKeySalt = KEY_SALT;
 
 /** scrypt cost for the session key, matching the credential store's own. */
 const KEY_PARAMS = { N: 16_384, r: 8, p: 1, keyLength: 64 };
@@ -80,8 +92,9 @@ function deriveSessionKey(secret: string): Buffer {
  */
 function resolveSessionSecret(options: WebAuthStoreOptions): string | null {
   const policy = resolveWebAuthPolicy(options);
-  if (policy.mode === "environment") return policy.password;
-  if (policy.mode === "stored") return `stored:${policy.digest.salt}:${policy.digest.hash}`;
+  const username = getExpectedUsername(options.env);
+  if (policy.mode === "environment") return `${username}:${policy.password}`;
+  if (policy.mode === "stored") return `${username}|stored:${policy.digest.salt}:${policy.digest.hash}`;
   // `open` has no password to bind to, and `unavailable` has no readable one.
   return null;
 }
