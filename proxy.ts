@@ -45,19 +45,18 @@ function unauthorizedPage(): string {
   /* The Sign-in button is intentionally still while it sits there — it only
      animates on click, then redirects to /login. The animation is two short
      keyframe phases so a click feels like a confirmation, not a flourish.
-     These are omp's own brand colours, the same three stops the OmpWordmark
-     logo paints: oklch(0.7 0.24 340) magenta, oklch(0.62 0.21 295) violet,
-     oklch(0.81 0.14 200) cyan. The press lands on the violet mid-stop, so the
-     button reads as the same mark as the one on the login page. The page is
-     inline HTML served by the proxy and cannot read the CSS custom properties
-     from globals.css, so the values are repeated here. */
+     Colour follows the theme: useTheme.applyOmpPalette rewrites every token
+     from /api/theme at runtime, so the accent is whatever palette the operator
+     picked, not the values baked into globals.css. The page is inline HTML
+     served by the proxy, so it declares the same accent the login page uses
+     and picks up the same runtime override through the token. */
   .signin {
     display: block;
     width: 100%;
     height: 56px;
     margin: 1.25rem 0 0.5rem;
     padding: 0 1.25rem;
-    border: 1px solid #2a313a;
+    border: 1px solid var(--border, #2a313a);
     border-radius: 12px;
     background: #1a1f26;
     color: #e6e8ea;
@@ -68,13 +67,13 @@ function unauthorizedPage(): string {
     transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
   }
   .signin:hover { background: #232a33; border-color: #3a4250; }
-  .signin:focus-visible { outline: 2px solid #9362F4; outline-offset: 2px; }
+  .signin:focus-visible { outline: 2px solid var(--accent, #7aa2f7); outline-offset: 2px; }
   .signin:active { transform: translateY(1px); }
   .signin.clicked { animation: signin-press 480ms ease-out forwards; }
   @keyframes signin-press {
     0%   { background: #1a1f26; border-color: #2a313a; transform: scale(1); }
-    35%  { background: #2d2740; border-color: #4a3d6b; transform: scale(.98); }
-    100% { background: #9362F4; border-color: #F84FCC; transform: scale(1); color: #ffffff; }
+    35%  { background: color-mix(in srgb, var(--accent, #7aa2f7) 22%, #1a1f26); border-color: var(--accent, #7aa2f7); transform: scale(.98); }
+    100% { background: var(--accent, #7aa2f7); border-color: var(--accent-hover, #7aa2f7); transform: scale(1); color: #ffffff; }
   }
   @media (prefers-reduced-motion: reduce) {
     .signin.clicked { animation-duration: 1ms; }
