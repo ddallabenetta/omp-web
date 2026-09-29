@@ -988,6 +988,7 @@ export function AppShell() {
         <div ref={topBarRef} style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--border)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)", background: "var(--bg-panel)" }}>
           <button
             onClick={handleSidebarToggle}
+            className="omp-press-tint"
              title={sidebarOpen ? translate("sidebar.hide") : translate("sidebar.show")}
              aria-label={sidebarOpen ? translate("sidebar.hide") : translate("sidebar.show")}
             style={{
@@ -1823,6 +1824,7 @@ export function AppShell() {
     {/* File panel toggle — always visible at top-right */}
     <button
       onClick={() => setRightPanelOpen((v) => !v)}
+      className="omp-press-tint"
        aria-controls="file-panel"
        aria-expanded={rightPanelOpen}
        title={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}

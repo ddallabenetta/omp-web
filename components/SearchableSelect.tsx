@@ -158,7 +158,7 @@ export function SearchableSelect({
     <div ref={rootRef} className={`${styles.root}${className ? ` ${className}` : ""}`} style={style}>
       <button
         type="button"
-        className={styles.trigger}
+        className={`${styles.trigger} omp-press-tint`}
         disabled={disabled}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
@@ -180,7 +180,7 @@ export function SearchableSelect({
 
       {open && (
         <div
-          className={styles.popover}
+          className={`${styles.popover} ${side === "above" ? "omp-slide-in-down" : "omp-slide-in-up"}`}
           style={side === "above"
             ? { bottom: `calc(100% + ${POPOVER_GAP_PX}px)`, maxHeight }
             : { top: `calc(100% + ${POPOVER_GAP_PX}px)`, maxHeight }}
@@ -224,7 +224,7 @@ export function SearchableSelect({
                 role="option"
                 aria-selected={option.value === value}
                 key={option.value}
-                className={styles.option}
+                className={`${styles.option} omp-press`}
                 data-active={index === activeIndex}
                 data-selected={option.value === value}
                 disabled={option.disabled}

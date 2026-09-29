@@ -1237,9 +1237,10 @@ span.linenumber {
  * class `omp-pop-in` on any element to play the entrance; the `::after`
  * pseudo-element adds the optional light wash that sweeps left to right.
  *
- * Animations only fire on mount, so to retrigger on a state change you
- * either remount the element (change a key) or use the small helper hook
- * in `lib/use-pop-animation.ts`.
+ * Animations only fire on mount, so to retrigger on a state change you have
+ * to remount the element (change a `key`). Toggling the class is not enough:
+ * React reuses a node whose class list is unchanged, so the second add is a
+ * no-op and the animation plays exactly once.
  */
 .omp-pop-in {
   position: relative;
@@ -1289,6 +1290,170 @@ span.linenumber {
 @media (prefers-reduced-motion: reduce) {
   .omp-pop-in,
   .omp-pop-in::after {
+    animation: none;
+  }
+}
+
+/*
+ * Press feedback, the same curve the 401 fallback page and the sign-in button
+ * play: dip to 96% at 35%, overshoot to 102% at 62%, settle back. Everything is
+ * expressed in tokens so it follows whatever palette the active theme installs.
+ *
+ * Two ways to use it. Drop `omp-press` on an element for the short physical
+ * press, which is what a button wants. Drop `omp-press-tint` on a control that
+ * also flashes, which is what a menu trigger or a sidebar toggle wants: the
+ * accent wash sweeps across and fades back out.
+ *
+ * Both are inert on a disabled element — a :active never fires there, and the
+ * tint is gated on :not(:disabled) so a dead button does not light up.
+ *
+ * Neither is safe on an element whose own `transform` matters — a chevron that
+ * rotates to show a collapsed state, for instance. A keyframe animation
+ * replaces the transform property outright for its duration, so the rotation
+ * would snap back to 0deg and jump on release. Use `omp-press-scale` there: it
+ * scales a child-free element through a custom property instead, leaving the
+ * element's own transform in place.
+ */
+.omp-press {
+  transform-origin: center;
+  transition: transform 120ms ease;
+}
+.omp-press:active:not(:disabled) {
+  animation: omp-press-down 180ms ease-out;
+}
+@keyframes omp-press-down {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(.96); }
+  70%  { transform: scale(1.015); }
+  100% { transform: scale(1); }
+}
+
+/*
+ * Same dip, but routed through `scale` so it composes with a transform the
+ * element already has. Keyframe animations on `scale` are not universally
+ * supported for interpolation, so the fallback is a plain transform-free rule
+ * that simply does not animate — a missing press is better than a chevron that
+ * loses its rotation.
+ */
+.omp-press-scale {
+  transform-origin: center;
+  transition: scale 120ms ease;
+}
+.omp-press-scale:active:not(:disabled) {
+  scale: 0.96;
+}
+
+/*
+ * Tint variant for triggers that open something. The colour runs on the
+ * ::after wash so it never fights the element's own background, and the
+ * element itself only scales. A toggle needs this rather than the plain press
+ * because the scale alone is invisible on a full-width bar.
+ */
+.omp-press-tint {
+  position: relative;
+  overflow: hidden;
+  transform-origin: center;
+  transition: transform 120ms ease;
+}
+.omp-press-tint:active:not(:disabled) {
+  animation: omp-press-down 180ms ease-out;
+}
+.omp-press-tint::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  opacity: 0;
+}
+.omp-press-tint:active:not(:disabled)::after {
+  animation: omp-press-tint-wash 260ms ease-out;
+}
+@keyframes omp-press-tint-wash {
+  0%   { opacity: 0; }
+  35%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/*
+ * Panel entrance for containers that mount on demand and carry a border of
+ * their own — the terminal side window, the dropdown surfaces. Lighter than
+ * omp-pop-in: no blur, no ::after wash, because these sit over content that
+ * must stay readable, and the translate is along the axis the panel came from.
+ */
+.omp-slide-in-left {
+  animation: omp-slide-in-left 240ms ease-out both;
+}
+@keyframes omp-slide-in-left {
+  0%   { opacity: 0; transform: translateX(-12px); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateX(0); }
+}
+.omp-slide-in-right {
+  animation: omp-slide-in-right 240ms ease-out both;
+}
+@keyframes omp-slide-in-right {
+  0%   { opacity: 0; transform: translateX(12px); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateX(0); }
+}
+.omp-slide-in-down {
+  animation: omp-slide-in-down 200ms ease-out both;
+}
+@keyframes omp-slide-in-down {
+  0%   { opacity: 0; transform: translateY(-8px) scale(.98); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.omp-slide-in-up {
+  animation: omp-slide-in-up 200ms ease-out both;
+  transform-origin: bottom center;
+}
+@keyframes omp-slide-in-up {
+  0%   { opacity: 0; transform: translateY(8px) scale(.98); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/*
+ * Modal pair. The backdrop and the panel get separate classes because they
+ * animate different properties: the backdrop only fades, the panel scales up
+ * from 96%. Putting both on one element would make the panel's scale drag the
+ * dimmed area around with it.
+ */
+.omp-modal-backdrop {
+  animation: omp-modal-fade 160ms ease-out both;
+}
+@keyframes omp-modal-fade {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+.omp-modal-panel {
+  animation: omp-modal-scale-in 200ms cubic-bezier(.2, .8, .3, 1) both;
+}
+@keyframes omp-modal-scale-in {
+  0%   { opacity: 0; transform: scale(.96) translateY(6px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omp-press,
+  .omp-press-scale,
+  .omp-press-tint,
+  .omp-slide-in-left,
+  .omp-slide-in-right,
+  .omp-slide-in-down,
+  .omp-slide-in-up,
+  .omp-modal-backdrop,
+  .omp-modal-panel {
+    animation: none;
+  }
+  .omp-press-scale,
+  .omp-press-scale:active:not(:disabled) {
+    scale: 1;
+  }
+  .omp-press-tint::after,
+  .omp-press-tint:active:not(:disabled)::after {
     animation: none;
   }
 }

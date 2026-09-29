@@ -85,6 +85,7 @@ export function TerminalDropdown({ cwd, onOpenTerminal, disabled }: Props) {
     <div ref={rootRef} style={{ position: "relative", display: "flex", height: "100%" }}>
       <button
         type="button"
+        className="omp-press-tint"
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
         title={disabled ? "Select a project to open a terminal" : "Terminal"}
@@ -140,6 +141,7 @@ export function TerminalDropdown({ cwd, onOpenTerminal, disabled }: Props) {
       {open && (
         <div
           role="menu"
+          className="omp-slide-in-down"
           style={{
             position: "absolute",
             top: "100%",
@@ -158,6 +160,7 @@ export function TerminalDropdown({ cwd, onOpenTerminal, disabled }: Props) {
           <button
             type="button"
             role="menuitem"
+            className="omp-press"
             onClick={() => void handleNew()}
             disabled={busy || disabled}
             style={{
@@ -198,6 +201,7 @@ export function TerminalDropdown({ cwd, onOpenTerminal, disabled }: Props) {
               <div
                 key={t.id}
                 role="menuitem"
+                className="omp-press-tint"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -238,6 +242,7 @@ export function TerminalDropdown({ cwd, onOpenTerminal, disabled }: Props) {
                 </div>
                 <button
                   type="button"
+                  className="omp-press"
                   onClick={(event) => {
                     event.stopPropagation();
                     void handleKill(t.id);

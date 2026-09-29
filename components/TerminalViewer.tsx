@@ -33,6 +33,13 @@ export function TerminalViewer({ terminalId, onExit }: Props) {
   const esRef = useRef<EventSource | null>(null);
   const [status, setStatus] = useState<"connecting" | "running" | "exited" | "error">("connecting");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Mirrors `status` for the `es.onerror` handler below, which needs the
+  // current value but must not be a reason to tear the terminal down. Reading
+  // state directly inside a long-lived listener would need `status` in the
+  // dependency list, and that would dispose and rebuild the whole xterm
+  // instance on every connecting → running → exited transition, wiping the
+  // scrollback each time. The ref is written wherever the state is set.
+  const statusRef = useRef(status);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -139,7 +146,7 @@ export function TerminalViewer({ terminalId, onExit }: Props) {
       // server explicitly closed the stream (terminal killed) the readyState
       // is CLOSED and we should surface that.
       if (es.readyState === EventSource.CLOSED) {
-        if (status === "running") {
+        if (statusRef.current === "running") {
           setStatus("error");
           setErrorMessage("Stream closed by server");
         }
@@ -154,10 +161,17 @@ export function TerminalViewer({ terminalId, onExit }: Props) {
       term.dispose();
       termRef.current = null;
     };
-  }, [terminalId, isDark, onExit, status]);
+  }, [terminalId, isDark, onExit]);
+
+  // Keep the ref in step with the state without pulling `status` back into the
+  // effect above. Runs after every render, which is what makes the ref current
+  // by the time the next `es.onerror` fires.
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   return (
-    <div style={{ position: "relative", height: "100%", width: "100%", display: "flex", flexDirection: "column", background: isDark ? "#1e1e1e" : "#ffffff" }}>
+    <div className="omp-slide-in-down" style={{ position: "relative", height: "100%", width: "100%", display: "flex", flexDirection: "column", background: isDark ? "#1e1e1e" : "#ffffff" }}>
       <div
         style={{
           display: "flex",

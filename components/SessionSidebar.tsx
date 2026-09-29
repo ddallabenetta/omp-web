@@ -51,6 +51,7 @@ function ToolbarIconButton({
   };
   return (
     <button
+      className="omp-press-tint"
       onClick={onClick}
       disabled={disabled}
       title={title}
@@ -1225,6 +1226,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               >
                 <button
                   type="button"
+                  className="omp-press"
                   onClick={() => toggleProjectCollapsed(project)}
                   title={isCollapsed ? t("sidebar.expandProject") : t("sidebar.collapseProject")}
                   aria-label={isCollapsed ? t("sidebar.expandProject") : t("sidebar.collapseProject")}
@@ -1786,6 +1788,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         >
           <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
             <button
+              className="omp-press-tint"
               onClick={() => setExplorerOpen((open) => {
                 const next = !open;
                 saveExplorerOpen(next);
@@ -2468,6 +2471,7 @@ function SessionItem({
           {/* Collapse toggle — always visible when has children */}
           {hasChildren && (
             <button
+              className="omp-press-scale"
               onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
               title={collapsed ? t("sidebar.expandForks") : t("sidebar.collapseForks")}
               style={{
@@ -2489,6 +2493,7 @@ function SessionItem({
           {hovered && !session.transient && (
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
               <button
+                className="omp-press"
                 onClick={startRename}
                 title={t("sidebar.rename")}
                 style={{
@@ -2515,6 +2520,7 @@ function SessionItem({
                 </svg>
               </button>
               <button
+                className="omp-press"
                 onClick={performArchive}
                 title={t("sidebar.archive")}
                 style={{

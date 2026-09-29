@@ -193,6 +193,7 @@ function MentionIcon({ size = 11 }: { size?: number }) {
 function DismissButton({ onClick, title }: { onClick: () => void; title: string }) {
   return (
     <button
+    className="omp-press"
       type="button"
       onClick={onClick}
       title={title}
@@ -379,6 +380,7 @@ function TreeNode({
         )}
         {onAtMention && hovered && (
           <button
+            className="omp-press-scale"
             onClick={(e) => {
               e.stopPropagation();
               onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir);
@@ -518,6 +520,7 @@ function Breadcrumb({
       }}
     >
       <button
+      className="omp-press"
         type="button"
         onClick={onNavigateHome}
         disabled={atHome}
@@ -546,6 +549,7 @@ function Breadcrumb({
         </svg>
       </button>
       <button
+      className="omp-press"
         type="button"
         onClick={onNavigateUp}
         disabled={!canGoUp}
@@ -578,6 +582,7 @@ function Breadcrumb({
         return (
           <span key={segment.fullPath} style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 }}>
             <button
+            className="omp-press"
               type="button"
               onClick={() => onNavigate(segment.fullPath)}
               title={segment.fullPath}
@@ -1023,6 +1028,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               </div>
               {uploadSummary.uploaded.length > 0 && onAtMentions && (
                 <button
+                className="omp-press"
                   type="button"
                   onClick={addUploadedFilesToChat}
                   title={uploadSummary.uploaded.length === 1 ? t("files.addUploadedFile") : t("files.addAllUploadedFiles")}
