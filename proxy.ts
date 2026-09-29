@@ -35,21 +35,64 @@ function unauthorizedPage(): string {
 <style>
   :root { color-scheme: dark light; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #14161a; color: #e6e8ea;
-         font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  main { max-width: 34rem; padding: 2rem; }
-  h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+         font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 24px; }
+  main { max-width: 34rem; width: 100%; }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; letter-spacing: -.01em; }
   p { margin: 0 0 0.85rem; color: #a8adb4; }
   code { color: #e6e8ea; }
   a { color: #7aa2f7; }
+
+  /* The Sign-in button is intentionally still while it sits there — it only
+     animates on click, then redirects to /login. The animation is two short
+     keyframe phases so a click feels like a confirmation, not a flourish. */
+  .signin {
+    display: block;
+    width: 100%;
+    height: 56px;
+    margin: 1.25rem 0 0.5rem;
+    padding: 0 1.25rem;
+    border: 1px solid #2a313a;
+    border-radius: 12px;
+    background: #1a1f26;
+    color: #e6e8ea;
+    font: 700 14px/56px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  }
+  .signin:hover { background: #232a33; border-color: #3a4250; }
+  .signin:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
+  .signin:active { transform: translateY(1px); }
+  .signin.clicked { animation: signin-press 480ms ease-out forwards; }
+  @keyframes signin-press {
+    0%   { background: #1a1f26; border-color: #2a313a; transform: scale(1); }
+    35%  { background: #2a3340; border-color: #4a5566; transform: scale(.98); }
+    100% { background: #0082b3; border-color: #00b4ff; transform: scale(1); color: #ffffff; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .signin.clicked { animation-duration: 1ms; }
+  }
 </style>
 </head>
 <body>
 <main>
   <h1>Authentication required</h1>
-  <p>omp-web is locked. Reload the page and sign in with the username <code>omp</code> and your password.</p>
+  <p>omp-web is locked. Sign in with your username and password.</p>
   <p>Forgot it? <a href="${RECOVERY_PAGE}">Recover access</a> — you will need to read a one-time code off the console
      of the machine running omp-web.</p>
+  <button type="button" class="signin" id="omp-signin">Sign in</button>
 </main>
+<script>
+  // The button animates first, then navigates. A 480ms delay lines up with
+  // the keyframe end so the press feels intentional rather than a flicker.
+  var btn = document.getElementById("omp-signin");
+  btn.addEventListener("click", function () {
+    btn.classList.add("clicked");
+    btn.disabled = true;
+    window.setTimeout(function () { window.location.replace(${JSON.stringify(LOGIN_PAGE)}); }, 460);
+  });
+</script>
 </body>
 </html>
 `;
