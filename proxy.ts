@@ -44,7 +44,11 @@ function unauthorizedPage(): string {
 
   /* The Sign-in button is intentionally still while it sits there — it only
      animates on click, then redirects to /login. The animation is two short
-     keyframe phases so a click feels like a confirmation, not a flourish. */
+     keyframe phases so a click feels like a confirmation, not a flourish.
+     These are omp's own tokens: titanium deep-blue #0082b3 and electric-blue
+     #00b4ff, the same pair --accent / --accent-hover resolve to in globals.css.
+     The page is inline HTML served by the proxy, so it cannot read those
+     custom properties and repeats the values here. */
   .signin {
     display: block;
     width: 100%;
@@ -62,7 +66,7 @@ function unauthorizedPage(): string {
     transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
   }
   .signin:hover { background: #232a33; border-color: #3a4250; }
-  .signin:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
+  .signin:focus-visible { outline: 2px solid #00b4ff; outline-offset: 2px; }
   .signin:active { transform: translateY(1px); }
   .signin.clicked { animation: signin-press 480ms ease-out forwards; }
   @keyframes signin-press {
