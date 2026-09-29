@@ -96,16 +96,20 @@ Volume layout, UID/GID matching and reverse-proxy notes: [docs/docker.md](./docs
 
 ## Password access
 
-A password locks the web interface and every API endpoint behind HTTP Basic Auth, with the fixed username `omp`. Turn it on wherever suits you:
+A password locks the web interface and every API endpoint behind authentication. Sign in through the browser form, or send HTTP Basic Auth — both accept the same credential. Turn the lock on wherever suits you:
 
 - **Settings → Access** in the browser, to set the password and switch the lock on or off.
 - **`omp-web --authenticated`**, which turns it on for this run and every later one, and asks for a password on the terminal if none has been set yet.
 - **`OMP_WEB_PASSWORD`**, which overrides the stored credential for as long as it is set.
 
+The username defaults to `omp` and is changeable in the same **Settings → Access** panel, or through `OMP_WEB_USERNAME`. Both halves of the credential matter: the session cookie is signed over the username *and* the password, so changing either one invalidates the sessions that were minted with the old pair.
+
 The password is stored as a `scrypt` hash in `~/.omp/agent/omp-web-auth.json` (mode `0600`) — never in plaintext, and never recoverable from the file. Forgotten it? Run `omp-web --reset-password` on the server, or open `/recover` and enter the one-time code omp-web prints on its own console.
 
-omp-web can invoke a high-privilege agent. Basic Auth does not encrypt the password in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
-API requests accept loopback names, IP literals, the selected bind hostname, and exact comma-separated names in `OMP_WEB_ALLOWED_HOSTS`. Configure that variable when a trusted reverse proxy uses a different external hostname.
+Session cookies are additionally bound to the server process: the signing key is salted with a random value generated at each cold start, so a cookie stops verifying after a restart even though the credential itself did not change. Sign in again after a redeploy.
+
+omp-web can invoke a high-privilege agent. Password access does not encrypt the credential in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
+API requests accept loopback names, IP literals, the selected bind hostname, exact comma-separated names in `OMP_WEB_ALLOWED_HOSTS`, and wildcard patterns such as `*.example.com`. Configure that variable when a trusted reverse proxy uses a different external hostname.
 
 Full details, including the recovery threat model: [docs/authentication.md](./docs/authentication.md).
 
@@ -162,8 +166,12 @@ Requests to loopback addresses are never proxied, so a local provider (Ollama, L
 - **Try different directions safely**: continue from an earlier message or fork a session into a separate route.
 - **Work across branches**: switch Git worktrees from the sidebar so new sessions and the Explorer follow the checkout you choose.
 - **Chat beside the project**: browse files on the left and preview source, docs, images, audio, and PDFs on the right while the agent works.
+- **Edit files in the browser**: open a file, change it, and save with `Ctrl+S` — no round trip to the terminal.
+- **Run a terminal next to the chat**: a real shell in a browser tab, session-scoped, so a failing command and its output sit next to the agent that produced them.
+- **Watch the machine work**: a live CPU and RAM badge in the top bar, with a sparkline popover on click.
 - **See session state clearly**: context usage, cost, compaction state, and system prompt details are visible from the top bar.
 - **Configure less from the terminal**: manage providers, logins/API keys, model tests, plugins, and skill switches from the web UI.
+- **Lock it down properly**: browser sign-in with a configurable username, hashed-at-rest credentials, and a one-time console code for recovery.
 - **Use the interface in your language**: switch between the supported UI languages from the top bar.
 
 ## Screenshots
@@ -304,7 +312,16 @@ app/
     models-config/  # read/write models.yml and test models
     plugins/        # omp plugin install/remove/enable/disable
     sessions/       # session reads, rename, delete, context, HTML export
+    settings/       # web settings, including the access panel
     skills/         # skill listing, search, install, enable/disable
+    system-stats/   # live CPU, RAM and load readings
+    terminal/       # PTY-backed shell sessions: create, stream, write input
+    web-access/     # credential check, sign-in, and the recovery code
+      login/        # POST sign-in, sets the session cookie
+      recovery/     # trade a recovery code for a new password
+    worktrees/      # Git worktree listing and switching
+  login/            # sign-in page
+  recover/          # forgotten-password page
 components/
   AppShell.tsx        # main layout, URL state, top panels, file tabs
   SessionSidebar.tsx  # project selector, session tree, Explorer
@@ -315,22 +332,29 @@ components/
   ModelsConfig.tsx    # provider and auth configuration panel
   ModelRolesPanel.tsx # per-role model assignment
   SkillsConfig.tsx    # skill management panel
-  FileExplorer.tsx    # file tree
-  FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview
+  FileExplorer.tsx    # file tree, with breadcrumb navigation
+  FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview, and editing
+  SystemStatsBadge.tsx # live CPU/RAM readout with a sparkline popover
+  TerminalDropdown.tsx  # terminal tab selector in the top bar
+  TerminalViewer.tsx    # xterm.js surface fed by the PTY stream
 lib/
   directory-browser.ts # directory normalization and safe listing helpers
+  file-access.ts      # file read safety boundary
+  file-paths.ts       # path encoding and relative path helpers
   http-dispatcher.ts  # HTTP(S) proxy setup for server-side fetch
+  markdown.ts         # Markdown/Mermaid/KaTeX plugin configuration
   model-roles.ts      # omp's model roles, read and written for the browser
   model-scope.ts      # enabledModels resolution shared by UI and startup
+  normalize.ts        # normalizes toolCall field names
   omp-runtime.ts      # shared Settings + AuthStorage + ModelRegistry
   omp-types.ts        # structural view of omp's AgentSession
   project-trust.ts    # gates a project's executable resources
+  request-security.ts # host allowlist and cross-site request rejection
   rpc-manager.ts      # AgentSessionWrapper lifecycle and global registry
   session-reader.ts   # parses .jsonl session files and branch contexts
-  normalize.ts        # normalizes toolCall field names
-  file-access.ts      # file read safety boundary
-  file-paths.ts       # path encoding and relative path helpers
-  markdown.ts         # Markdown/Mermaid/KaTeX plugin configuration
+  terminal-manager.ts # PTY lifetime, sessions kept alive on globalThis
+  web-auth.ts         # credential store, username resolution, scrypt hashing
+  web-auth-session.ts # session cookie issue/verify, signed with a boot salt
 hooks/
   useAgentSession.ts  # session loading, command sending, SSE state machine
   useAudio.ts         # completion sound

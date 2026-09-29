@@ -5,8 +5,10 @@ and spends provider credits. Anything that can reach the port can do all of
 that. On loopback that is exactly the intent; the moment omp-web listens on a
 LAN address or sits behind a tunnel, it needs a lock.
 
-The lock is HTTP Basic Auth over every page and every API route. The username is
-always `omp`; the password is the only secret.
+The lock covers every page and every API route. Two credentials are checked:
+a username, defaulting to `omp`, and the password, which is the only secret
+that has to be unpredictable. The browser shows a sign-in form; API clients
+send HTTP Basic Auth. Both are accepted on the same routes.
 
 ## Turning it on
 
@@ -36,12 +38,35 @@ the password once interactively, or use the environment variable below.
 **From the environment.**
 
 ```bash
-OMP_WEB_PASSWORD='a-long-random-password' omp-web
+OMP_WEB_PASSWORD='[REDACTED:Env Secret Field]' omp-web
 ```
 
 The variable overrides the stored credential completely: while it is set, the
 settings panel is read-only and recovery has nothing to reset. Leaving it unset
 or empty hands control back to the stored credential.
+
+## The username
+
+The username is not a secret, but it is part of the credential and is checked
+as strictly as the password. It resolves in this order:
+
+1. the `username` field in `omp-web-auth.json`, if the file has a non-empty one;
+2. `OMP_WEB_USERNAME` from the environment, trimmed;
+3. the built-in default `omp`.
+
+Note the direction: the stored value wins over the environment. `OMP_WEB_PASSWORD`
+overrides the stored credential, but `OMP_WEB_USERNAME` only fills in for a file
+that has no username recorded — so setting the variable on a server that was
+already configured through Settings will not rename it.
+
+Settings → **Access** writes the field, so a server moved behind a reverse
+proxy can be renamed without touching the environment. Because the session
+cookie is signed over the username as well as the password, renaming the
+account logs everyone out — which is the correct outcome, not a side effect to
+work around.
+
+Keep the username in mind when scripting: Basic Auth clients must send the
+configured name, not a hard-coded `omp`.
 
 ## How the password is stored
 
@@ -108,6 +133,28 @@ VPN, before exposing it beyond loopback. The password stops a port scanner. It
 does not stop someone reading the wire.
 
 Separately from the password, API requests are accepted only for loopback names,
-IP literals, the bind hostname, and the exact names listed in
-`OMP_WEB_ALLOWED_HOSTS`; cross-site browser requests are rejected outright.
-Those checks run before authentication and apply to `/recover` too.
+IP literals, the bind hostname, and the names listed in
+`OMP_WEB_ALLOWED_HOSTS` (exact names, or wildcard patterns like
+`*.example.com`); cross-site browser requests are rejected outright. Those
+checks run before authentication and apply to `/recover` too.
+
+## Sessions and what ends them
+
+A successful sign-in sets an `omp_session` cookie instead of asking for the
+credential on every request. The cookie is signed over the username, the
+password, and a random salt generated at server start. That binds it to both
+halves of the credential *and* to the running process, so a session ends when:
+
+- the password changes, or the username changes;
+- the server restarts, because the boot salt is new;
+- the TTL of 8 hours expires, or the cookie is dropped.
+
+A restart is therefore a logout. During a redeploy every open tab has to sign in
+again — that is the intended trade for a cookie that cannot outlive the process
+that minted it. There is no session list and no manual revocation: the shortest
+lifetime is a restart.
+
+Two details worth knowing when reading a bug report: the secret is derived per
+mode, so switching between the environment variable and the stored file
+invalidates cookies even if the password is identical, and a server with no
+password configured has no session to issue at all.
