@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import os from "os";
 import { performance } from "perf_hooks";
+import {
+  readAvailableCores,
+  readMemAvailableBytes,
+  readTotalMemoryBytes,
+} from "@/lib/system-resources";
 
 export const dynamic = "force-dynamic";
 
@@ -35,11 +40,11 @@ export async function GET() {
   const prev = globalThis.__ompSystemStatsPrev;
   globalThis.__ompSystemStatsPrev = now;
 
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const usedMem = totalMem - freeMem;
+  const { totalBytes: totalMem, source: totalMemSource } = readTotalMemoryBytes();
+  const freeMem = readMemAvailableBytes(totalMem);
+  const usedMem = Math.max(0, totalMem - freeMem);
 
-  const cores = os.cpus().length || 1;
+  const { cores, source: coresSource } = readAvailableCores();
 
   let cpuPercent: number | null = null;
   if (prev) {
@@ -56,12 +61,12 @@ export async function GET() {
   }
 
   const proc = process.memoryUsage();
-
   const loadAvg = os.loadavg();
 
   return NextResponse.json({
     cpuPercent,
     cpuCores: cores,
+    cpuCoresSource: coresSource,
     loadAvg: {
       "1m": loadAvg[0],
       "5m": loadAvg[1],
@@ -72,6 +77,10 @@ export async function GET() {
       usedBytes: usedMem,
       freeBytes: freeMem,
       usedPercent: totalMem > 0 ? (usedMem / totalMem) * 100 : 0,
+      // Which reading produced totalBytes. The popover shows it so a number
+      // that disagrees with the host's `free -h` can be traced to its source
+      // instead of looking like a bug.
+      totalSource: totalMemSource,
     },
     process: {
       pid: process.pid,

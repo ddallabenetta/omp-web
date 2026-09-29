@@ -5,8 +5,9 @@ import { useEffect, useRef, useState } from "react";
 interface Stats {
   cpuPercent: number | null;
   cpuCores: number;
+  cpuCoresSource?: string;
   loadAvg: { "1m": number; "5m": number; "15m": number };
-  memory: { totalBytes: number; usedBytes: number; usedPercent: number };
+  memory: { totalBytes: number; usedBytes: number; usedPercent: number; totalSource?: string };
   process: { pid: number; rssBytes: number; heapBytes: number; uptimeSec: number };
   sampledAt: number;
 }
@@ -209,18 +210,26 @@ export function SystemStatsBadge() {
         onMouseEnter={(event) => { event.currentTarget.style.color = "var(--text)"; }}
         onMouseLeave={(event) => { event.currentTarget.style.color = "var(--text-muted)"; }}
       >
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={stats ? `CPU across ${stats.cpuCores} cores` : undefined}>
           <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: colorFor(cpuPct), flexShrink: 0 }} />
           <span style={{ color: "var(--text-dim)" }}>CPU</span>
           <span style={{ color: "var(--text)", fontWeight: 500 }}>
             {cpuPct === null ? "—" : `${cpuPct.toFixed(0)}%`}
           </span>
+          {/* The absolute figure is the one people check against `nproc`, so it
+              belongs next to the percentage rather than only in the popover. */}
+          <span style={{ color: "var(--text-dim)" }}>
+            {stats ? `${stats.cpuCores}c` : ""}
+          </span>
         </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={stats ? `Memory: ${formatBytes(stats.memory.usedBytes)} of ${formatBytes(stats.memory.totalBytes)}` : undefined}>
           <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: colorFor(memPct), flexShrink: 0 }} />
           <span style={{ color: "var(--text-dim)" }}>RAM</span>
           <span style={{ color: "var(--text)", fontWeight: 500 }}>
             {memPct === null ? "—" : `${memPct.toFixed(0)}%`}
+          </span>
+          <span style={{ color: "var(--text-dim)" }}>
+            {stats ? formatBytes(stats.memory.totalBytes) : ""}
           </span>
         </span>
       </button>
@@ -289,6 +298,17 @@ export function SystemStatsBadge() {
               <div>cores: {stats.cpuCores} · loadavg {stats.loadAvg["1m"].toFixed(2)} / {stats.loadAvg["5m"].toFixed(2)} / {stats.loadAvg["15m"].toFixed(2)}</div>
               <div>mem: {formatBytes(stats.memory.usedBytes)} / {formatBytes(stats.memory.totalBytes)}</div>
               <div>pid: {stats.process.pid} · rss: {formatBytes(stats.process.rssBytes)}</div>
+              {/* Where the two totals came from. In a container or a cgroup-capped
+                  service these differ from the host's `free -h`, and naming the
+                  source is the difference between "the badge is wrong" and
+                  "the badge is describing this process's share". */}
+              {(stats.memory.totalSource || stats.cpuCoresSource) && (
+                <div style={{ marginTop: 4, opacity: 0.75 }}>
+                  total ram: {stats.memory.totalSource ?? "unknown"}
+                  <br />
+                  core count: {stats.cpuCoresSource ?? "unknown"}
+                </div>
+              )}
             </div>
           )}
         </div>
