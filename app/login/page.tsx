@@ -24,6 +24,10 @@ export default function LoginPage() {
   const [revealed, setRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped on every rejected attempt so the CSS animation restarts. React
+  // re-uses a node whose class did not change, so re-adding the same class
+  // would be a no-op and the shake would only ever play once.
+  const [rejected, setRejected] = useState(0);
 
   const signIn = useCallback(async () => {
     if (username.length === 0 || password.length === 0) return;
@@ -38,6 +42,7 @@ export default function LoginPage() {
       if (!response.ok) {
         const data = await response.json().catch(() => null) as { error?: string } | null;
         setError(data?.error ?? `HTTP ${response.status}`);
+        setRejected((count) => count + 1);
         return;
       }
       // `replace` so the browser Back button does not return to a login form
@@ -118,7 +123,8 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            className={styles.primary}
+            key={rejected}
+            className={error ? `${styles.primary} ${styles.rejected}` : styles.primary}
             disabled={busy || username.length === 0 || password.length === 0}
           >
             {busy ? "Signing in…" : "Sign in"}

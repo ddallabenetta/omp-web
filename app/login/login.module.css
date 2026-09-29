@@ -125,3 +125,33 @@
 }
 
 .primary:disabled { cursor: not-allowed; opacity: .5; }
+
+/* A rejected attempt replays the same press the 401 fallback page uses, but
+   tinted with the theme's danger colour and with a short recoil at the end so
+   it reads as "no" rather than as another attempt. The key on the button in
+   page.tsx remounts the node per rejection, which is what restarts the
+   animation instead of letting it sit already-finished after the first miss. */
+.rejected {
+  animation: login-reject 480ms ease-out;
+}
+@keyframes login-reject {
+  0% {
+    background: var(--accent);
+    border-color: transparent;
+    transform: scale(1);
+  }
+  35% {
+    background: color-mix(in srgb, var(--danger) 85%, var(--bg));
+    transform: scale(.96);
+  }
+  62% {
+    transform: scale(1.02);
+  }
+  100% {
+    background: var(--accent);
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rejected { animation-duration: 1ms; }
+}
