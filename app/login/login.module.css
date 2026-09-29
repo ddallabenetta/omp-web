@@ -79,6 +79,27 @@
 
 .control:focus-within { border-color: var(--accent); }
 
+/* The username field has no inner button, so the wrapper is the whole control.
+ * Same tokens as `.control` — using `--bg` on both means the input reads as a
+ * well inside the card in light and in dark, because `--bg` is the page colour
+ * and `--bg-panel` is the card colour in either scheme. */
+.fieldGroup {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* `.input` sizes itself with `flex`, which does nothing here — this wrapper is
+ * a block, not a flex row. Give it the same 36px the `.control` row produces so
+ * both fields come out the same height. */
+.fieldGroup > .input {
+  display: block;
+  width: 100%;
+}
+
+.fieldGroup:focus-within { border-color: var(--accent); }
+
 .input {
   flex: 1;
   min-width: 0;
