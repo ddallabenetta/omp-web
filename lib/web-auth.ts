@@ -1,11 +1,87 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { statSync } from "node:fs";
 import {
+  DEFAULT_WEB_AUTH_USERNAME,
+  readWebAuthState,
+  resolveWebAuthFile,
   resolveWebAuthPolicy,
   verifyWebPassword,
   type WebAuthStoreOptions,
 } from "../bin/web-auth-store.js";
 
-export const OMP_WEB_AUTH_USERNAME = "omp";
+declare global {
+  // The cached username plus the file mtime that produced it. A settings-panel
+  // write invalidates the cache by changing the mtime — no extra invalidation
+  // hook needed, and per-request `getExpectedUsername` calls stay cheap.
+  var __ompWebAuthUsernameCache: { fileMtimeMs: number; username: string } | undefined;
+}
+
+/**
+ * Resolve the Basic Auth username omp-web accepts, defaulting to `omp`.
+ *
+ * Lookups happen in this order:
+ *   1. The `username` field of the credential file at `OMP_WEB_AUTH_FILE` (or
+ *      the default location under the agent directory). A missing or empty
+ *      value falls through to the next step rather than overriding the default.
+ *   2. `OMP_WEB_USERNAME` from the environment, trimmed.
+ *   3. The hard-coded default `omp`.
+ *
+ * Caching is mtime-keyed on `globalThis.__ompWebAuthUsernameCache`, and the
+ * cache is only written when the credential file itself carries a `username`
+ * field. The env-only path never caches: the env is the only input that can
+ * change between calls in a long-running process (operator sets
+ * `OMP_WEB_USERNAME`, a test mutates it), so any cache there would be a
+ * foot-gun.
+ */
+export function getExpectedUsername(env = process.env): string {
+  const file = resolveWebAuthFile(env);
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(file).mtimeMs;
+  } catch {
+    // Missing or unreadable file: re-resolve every time. The env-only path
+    // does not benefit from caching because the env can move underneath us.
+    return resolveUsernameFromEnv(env);
+  }
+
+  const cached = globalThis.__ompWebAuthUsernameCache;
+  if (cached && cached.fileMtimeMs === mtimeMs) {
+    return cached.username;
+  }
+
+  const state = readWebAuthState(file);
+  if (state.status === "ok" && typeof state.config.username === "string") {
+    const trimmed = state.config.username.trim();
+    if (trimmed.length > 0) {
+      globalThis.__ompWebAuthUsernameCache = { fileMtimeMs: mtimeMs, username: trimmed };
+      return trimmed;
+    }
+  }
+
+  return resolveUsernameFromEnv(env);
+}
+
+function resolveUsernameFromEnv(env: NodeJS.ProcessEnv): string {
+  const raw = env.OMP_WEB_USERNAME;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return DEFAULT_WEB_AUTH_USERNAME;
+}
+
+/**
+ * Constant form of `getExpectedUsername()` for callers that need a value at
+ * module scope (settings UI copy, `proxy.ts` headers, tests). The whole repo
+ * imports this name as a constant, so the export stays a string and just
+ * snapshots whatever the resolver said at module load.
+ *
+ * NB: `OMP_WEB_AUTH_USERNAME` is a module-load snapshot. Runtime checks
+ * (every request through `proxy.ts` and `lib/web-auth-session.ts`) call
+ * `getExpectedUsername()` instead, so a settings-panel change takes effect on
+ * the next request even though this constant is frozen.
+ */
+export const OMP_WEB_AUTH_USERNAME = getExpectedUsername();
 
 /**
  * Outcome of checking one request's credentials.

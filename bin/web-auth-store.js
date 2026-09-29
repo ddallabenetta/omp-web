@@ -24,11 +24,20 @@ const { homedir } = require("node:os");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { basename, dirname, join, resolve } = require("node:path");
 
-/** Basic Auth username omp-web accepts. The password is the only secret. */
-const WEB_AUTH_USERNAME = "omp";
+/** Default Basic Auth username omp-web accepts. The password is the only secret. */
+const DEFAULT_WEB_AUTH_USERNAME = "omp";
 
 /** Credential filename, kept next to the agent configuration. */
 const WEB_AUTH_FILENAME = "omp-web-auth.json";
+
+/**
+ * Backwards-compatible snapshot of the default username. Older callers that
+ * want the built-in default without touching the file or the environment can
+ * still import this name; runtime callers should use `getWebAuthStatus` or
+ * `getExpectedUsername` in `lib/web-auth.ts` instead, which resolve the live
+ * file first.
+ */
+const WEB_AUTH_USERNAME = DEFAULT_WEB_AUTH_USERNAME;
 
 /** Current on-disk schema version. */
 const WEB_AUTH_VERSION = 1;
@@ -101,6 +110,24 @@ function validatePassword(password) {
     return `The password must be at most ${MAX_PASSWORD_LENGTH} characters long.`;
   }
   if (password.trim().length === 0) return "The password cannot be only whitespace.";
+  return null;
+}
+
+/**
+ * Reject usernames that Basic Auth cannot carry or that would be ambiguous in
+ * the credential file. Returns an error message, or null when acceptable.
+ *
+ * Whitespace-only is rejected outright rather than falling back to the default
+ * — the caller just typed one and deserves to see what was actually written.
+ * `setWebUsername` trims leading/trailing whitespace before validating so an
+ * operator who copies a name with surrounding spaces still gets it accepted.
+ */
+function validateUsername(username) {
+  if (typeof username !== "string") return "A username is required.";
+  const trimmed = username.trim();
+  if (trimmed.length === 0) return "A username is required.";
+  if (trimmed.length > 256) return "The username must be at most 256 characters long.";
+  if (/\s/.test(trimmed)) return "The username cannot contain whitespace.";
   return null;
 }
 
@@ -280,6 +307,8 @@ function getWebAuthStatus(options = {}) {
   const state = readWebAuthState(file);
   const config = state.config ?? {};
   const storedPassword = isUsableDigest(config.password);
+  const storedUsernameRaw = typeof config.username === "string" ? config.username.trim() : "";
+  const storedUsernameUsable = storedUsernameRaw.length > 0;
 
   return {
     enabled: Boolean(fromEnvironment) || (state.status === "ok" && config.enabled === true && storedPassword),
@@ -288,7 +317,10 @@ function getWebAuthStatus(options = {}) {
     source: fromEnvironment ? "environment" : storedPassword ? "stored" : "none",
     managedByEnvironment: Boolean(fromEnvironment),
     unreadable: state.status === "unreadable",
-    username: WEB_AUTH_USERNAME,
+    // The file wins over the default: an old file without `username` reports
+    // `omp` so existing deployments see the same value they always did, and
+    // the settings panel can write a new value that sticks afterwards.
+    username: storedUsernameUsable ? storedUsernameRaw : DEFAULT_WEB_AUTH_USERNAME,
     updatedAt: typeof config.updatedAt === "string" ? config.updatedAt : null,
     file,
   };
@@ -378,6 +410,11 @@ function timestamp() {
  *
  * Any pending recovery code is dropped: whoever set this password no longer
  * needs one, and a stale code must not outlive the credential it was minted for.
+ *
+ * A supplied `username` is written in the same atomic write, so callers can
+ * rotate `(username, password)` together — the route that orchestrates a
+ * "Save password" pass does exactly that, and `OMP_WEB_USERNAME` is *not*
+ * preferred here because the file always wins once it has a value.
  */
 function setWebPassword(password, options = {}) {
   const file = options.file ?? resolveWebAuthFile(options.env ?? process.env);
@@ -385,16 +422,61 @@ function setWebPassword(password, options = {}) {
   if (invalid) throw new Error(invalid);
 
   const config = currentConfig(file, { replaceUnreadable: true });
+  const nextUsername = options.username !== undefined
+    ? normalizeStoredUsername(options.username)
+    : (typeof config.username === "string" ? config.username : undefined);
   writeWebAuthConfig({
     ...config,
     version: WEB_AUTH_VERSION,
     enabled: true,
+    username: nextUsername,
     password: createDigest(password, options.params),
     updatedAt: timestamp(),
     recovery: undefined,
   }, file);
   clearVerificationCache();
   return getWebAuthStatus({ ...options, file });
+}
+
+/**
+ * Replace the stored username without touching the password digest.
+ *
+ * Validates and trims the supplied value, persists it next to the existing
+ * digest, and clears the verification cache: the session cookie in
+ * `lib/web-auth-session.ts` keys off the `(username, password)` pair, so an
+ * unchanged cache would accept a cookie minted under the previous username and
+ * hand the new operator a session that nobody legitimately owns.
+ *
+ * Throws on an invalid username so the API route can return a 400 with the
+ * message instead of writing the file half-correct.
+ */
+function setWebUsername(username, options = {}) {
+  const file = options.file ?? resolveWebAuthFile(options.env ?? process.env);
+  if (typeof username !== "string") throw new Error("A username is required.");
+  const trimmed = username.trim();
+  const invalid = validateUsername(trimmed);
+  if (invalid) throw new Error(invalid);
+
+  const config = currentConfig(file);
+  writeWebAuthConfig({
+    ...config,
+    version: WEB_AUTH_VERSION,
+    username: trimmed,
+    updatedAt: timestamp(),
+  }, file);
+  clearVerificationCache();
+  return getWebAuthStatus({ ...options, file });
+}
+
+/**
+ * Trim a candidate username down to the stored form. Returns `undefined` for
+ * an empty/whitespace-only input so the field is dropped from the next write
+ * and `getWebAuthStatus` falls back to the default.
+ */
+function normalizeStoredUsername(username) {
+  if (typeof username !== "string") return undefined;
+  const trimmed = username.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /** Turn the lock on or off without touching the stored digest. */
@@ -405,6 +487,8 @@ function setWebPasswordEnabled(enabled, options = {}) {
     throw new Error("Set a password before enabling password access.");
   }
 
+  // `config.username` carries through; toggling enable/disable is not an
+  // opportunity to lose the operator-chosen username.
   writeWebAuthConfig({ ...config, version: WEB_AUTH_VERSION, enabled: Boolean(enabled) }, file);
   clearVerificationCache();
   return getWebAuthStatus({ ...options, file });
@@ -418,6 +502,8 @@ function clearWebPassword(options = {}) {
     ...config,
     version: WEB_AUTH_VERSION,
     enabled: false,
+    // Keep the stored username around: a future `setWebPassword` would not
+    // otherwise know the operator's preferred value, and the field is small.
     password: undefined,
     recovery: undefined,
     updatedAt: timestamp(),
@@ -526,6 +612,7 @@ function consumeRecoveryCode(code, password, options = {}) {
 }
 
 module.exports = {
+  DEFAULT_WEB_AUTH_USERNAME,
   MIN_PASSWORD_LENGTH,
   RECOVERY_CODE_TTL_MS,
   RECOVERY_MAX_ATTEMPTS,
@@ -544,7 +631,9 @@ module.exports = {
   resolveWebAuthPolicy,
   setWebPassword,
   setWebPasswordEnabled,
+  setWebUsername,
   validatePassword,
+  validateUsername,
   verifyDigest,
   verifyWebPassword,
 };

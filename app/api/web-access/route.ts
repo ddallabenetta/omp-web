@@ -4,6 +4,7 @@ import {
   getWebAuthStatus,
   setWebPassword,
   setWebPasswordEnabled,
+  setWebUsername,
   validatePassword,
 } from "@/bin/web-auth-store.js";
 import { hasJsonContentType } from "@/lib/request-security";
@@ -21,9 +22,9 @@ import type { WebAccessStatus } from "@/lib/api-types";
 
 export const dynamic = "force-dynamic";
 
-type WebAccessAction = "set-password" | "enable" | "disable" | "clear";
+type WebAccessAction = "set-password" | "set-username" | "enable" | "disable" | "clear";
 
-const ACTIONS = new Set<WebAccessAction>(["set-password", "enable", "disable", "clear"]);
+const ACTIONS = new Set<WebAccessAction>(["set-password", "set-username", "enable", "disable", "clear"]);
 
 function statusResponse(status: WebAccessStatus) {
   return NextResponse.json(status, { headers: { "Cache-Control": "no-store" } });
@@ -38,9 +39,9 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Expected a JSON body" }, { status: 415 });
   }
 
-  let body: { action?: unknown; password?: unknown };
+  let body: { action?: unknown; password?: unknown; username?: unknown };
   try {
-    body = await req.json() as { action?: unknown; password?: unknown };
+    body = await req.json() as { action?: unknown; password?: unknown; username?: unknown };
   } catch {
     return NextResponse.json({ error: "Expected a JSON body" }, { status: 400 });
   }
@@ -51,7 +52,9 @@ export async function PUT(req: Request) {
   }
 
   // `OMP_WEB_PASSWORD` overrides the stored credential, so editing the store
-  // while it is set would change nothing a user could observe.
+  // while it is set would change nothing a user could observe. The same guard
+  // covers `set-username`: an environment-managed lock owns the entire
+  // credential pair, not just the password half.
   if (getWebAuthStatus().managedByEnvironment) {
     return NextResponse.json(
       { error: "Password access is managed by the OMP_WEB_PASSWORD environment variable. Unset it to manage the password here." },
@@ -64,8 +67,15 @@ export async function PUT(req: Request) {
       case "set-password": {
         const invalid = validatePassword(body.password);
         if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
-        return statusResponse(setWebPassword(body.password));
+        // Carry `username` in the same atomic write so the panel can keep the
+        // stored username in sync with the freshly-validated one. Omitting it
+        // leaves any previously-stored username alone.
+        return statusResponse(setWebPassword(body.password, { username: body.username }));
       }
+      case "set-username":
+        // `setWebUsername` throws on validation failure with a useful message,
+        // and the catch below turns it into a 400.
+        return statusResponse(setWebUsername(body.username));
       case "enable":
         return statusResponse(setWebPasswordEnabled(true));
       case "disable":

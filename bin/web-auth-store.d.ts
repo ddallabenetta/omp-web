@@ -54,6 +54,13 @@ export interface WebAuthStoreOptions {
   params?: Partial<Omit<WebAuthDigest, "algorithm" | "salt" | "hash">>;
   policy?: WebAuthPolicy;
   now?: number;
+  /**
+   * Used by `setWebPassword` to atomically rotate the stored username in the
+   * same write. `setWebUsername` and the read-side helpers ignore it.
+   * `unknown` rather than `string` so the route handler can pass body fields
+   * straight through without an intermediate cast.
+   */
+  username?: unknown;
 }
 
 export type RecoveryIssueResult =
@@ -71,6 +78,7 @@ export type WebAuthState =
   | { status: "unreadable"; config: null }
   | { status: "ok"; config: Record<string, unknown> };
 
+export declare const DEFAULT_WEB_AUTH_USERNAME: string;
 export declare const MIN_PASSWORD_LENGTH: number;
 export declare const RECOVERY_CODE_TTL_MS: number;
 export declare const RECOVERY_MAX_ATTEMPTS: number;
@@ -97,6 +105,8 @@ export declare function resolveWebAuthFile(env?: NodeJS.ProcessEnv): string;
 export declare function resolveWebAuthPolicy(options?: WebAuthStoreOptions): WebAuthPolicy;
 export declare function setWebPassword(password: unknown, options?: WebAuthStoreOptions): WebAuthStatus;
 export declare function setWebPasswordEnabled(enabled: boolean, options?: WebAuthStoreOptions): WebAuthStatus;
+export declare function setWebUsername(username: unknown, options?: WebAuthStoreOptions): WebAuthStatus;
 export declare function validatePassword(password: unknown): string | null;
+export declare function validateUsername(username: unknown): string | null;
 export declare function verifyDigest(secret: unknown, digest: unknown): boolean;
 export declare function verifyWebPassword(password: unknown, options?: WebAuthStoreOptions): boolean;
