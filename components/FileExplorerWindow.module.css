@@ -1,0 +1,119 @@
+/*
+ * GROSSES EXPLORER-FENSTER. Bewusst kein Dialog mit einer Bestaetigung,
+ * sondern ein Arbeitswerkzeug: der Nutzer soll darin denselben Explorer
+ * bedienen wie in der Seitenleiste, nur mit mehr Platz fuer lange Pfade und
+ * breite Aenderungslisten.
+ *
+ * Die Masse sind das Argument gegen kleinere Werte. `FileImagePreview`
+ * braucht 960 Pixel fuer eine Bildvorschau, `FileBrowserDialog` 720 fuer
+ * eine Ordnerliste — beides Ansichten, die man ansieht und dann wegklickt.
+ * Der Explorer wird darin dagegen gelesen, verglichen und bedient: Pfadnamen
+ * und Dateinamen stehen nebeneinander, die Aenderungsliste fuehrt
+ * Statuskuerzel, Name und Zeilenzahlen in einer Zeile. 1160 Pixel geben
+ * beiden Spalten Luft, ohne auf einem 1280er-Bildschirm schon die Ringe
+ * knapp zu machen. 85vh laesst darunter genug Zeilen fuer einen Bildschirm
+ * voller Aenderungen und haelt die Kopfzeile des Panels sichtbar.
+ *
+ * Die Farben kommen aus den Theme-Tokens; hier steht nur Layout und Fokusring.
+ */
+
+/* Ueber allen anderen Overlays: das Fenster traegt einen Explorer, und der
+ * Explorer kann selbst Overlays oeffnen (Kontextmenue 320, Bildvorschau
+ * 1200, Zielordner-Dialog 1100). Damit die nicht hinter dem Backdrop
+ * verschwinden, liegt es ueber `FileImagePreview` (1200). */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 1160px;
+  max-width: 100%;
+  height: 85vh;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.24);
+}
+
+.panel:focus {
+  outline: none;
+}
+
+/* ---- Kopfzeile ---- */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 9px 10px 9px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.iconButton:hover {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.glyph {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Der Explorer liefert `minHeight: 100%` statt einer eigenen ScrollFlaeche;
+ * in der Seitenleiste scrollt der Container darum herum. Hier gibt es keinen
+ * ausseren Container, also scrollt die Flaeche hier und der Baum wächst
+ * darunter nach unten, statt abgeschnitten zu werden. */
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}

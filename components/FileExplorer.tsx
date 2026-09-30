@@ -2,6 +2,7 @@
 
 import { forwardRef, useState, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef } from "react";
 import { getFileIcon, FolderIcon } from "./FileIcons";
+import windowStyles from "./FileExplorerWindow.module.css";
 import {
   encodeFilePathForApi,
   getFileDirectory,
@@ -27,6 +28,31 @@ interface SelectionEntry {
   path: string;
   name: string;
   isDir: boolean;
+}
+
+/**
+ * Der Blick auf den Baum: welcher Ordner oben steht und welche Aeste offen sind.
+ * Er wandert als Prop von einer Instanz zur anderen, damit das grosse Fenster
+ * seine Position nicht bei jedem Oeffnen verliert — es wird beim Schliessen aus
+ * dem DOM entfernt, sein Zustand also nicht vom React-State behalten.
+ */
+export interface ExplorerViewState {
+  currentPath: string;
+  expandedPaths: Set<string>;
+}
+
+/**
+ * Zwei Blicke gelten als gleich, wenn Pfad und aufgeklappte Ordner
+ * uebereinstimmen. Der Vergleich entscheidet darueber, ob eine Meldung den
+ * Zustand der aeusseren Instanz ueberhaupt anfasst: gibt der Melder denselben
+ * Inhalt zurueck, bleibt der Zustand gleich und React rendert nicht neu.
+ * Ohne diese Pruefung wuerden Fenster und Meldung einander hochschaukeln.
+ */
+function sameViewState(a: ExplorerViewState, b: ExplorerViewState): boolean {
+  if (a.currentPath !== b.currentPath) return false;
+  if (a.expandedPaths.size !== b.expandedPaths.size) return false;
+  for (const path of a.expandedPaths) if (!b.expandedPaths.has(path)) return false;
+  return true;
 }
 
 interface FileEntry {
@@ -60,6 +86,31 @@ interface Props {
   onRefresh?: () => void;
   changesCollapsed: boolean;
   onChangesCountChange?: (count: number) => void;
+  /**
+   * Startzustand des Baums fuer eine Instanz, die nach dem Schliessen wieder
+   * gemountet wird. Setzt die aufrufende Instanz den Wert, beginnt der Baum bei
+   * diesem Pfad mit genau diesen offenen Aesten; der geladene Baum selbst wird
+   * trotzdem neu geholt.
+   */
+  initialViewState?: ExplorerViewState;
+  /**
+   * Meldet jede Aenderung an Pfad und offenen Aesten nach aussen. Zusammen mit
+   * `initialViewState` laesst sich damit eine Instanz aus dem DOM nehmen und
+   * spaeter mit demselben Blick wieder einsetzen.
+   *
+   * Es ist ein echter Zustandskanal und kein Benachrichtigungs-Flag: der Melder
+   * entscheidet, was an den Zustand der aufrufenden Instanz weitergegeben wird.
+   * Wegen `sameViewState` entsteht dabei kein Pingpong, und weil der Baum erst
+   * nach dem Mount geladen wird, kann der Melder nie eine `currentPath` melden,
+   * die die Lade-Anfrage nicht kennt.
+   */
+  onViewStateChange?: (view: ExplorerViewState) => void;
+  /**
+   * Unterdrueckt den Knopf, der den Explorer in ein eigenes Fenster oeffnet.
+   * Die Instanz im Fenster setzt das: ein Explorer im Explorer, der sich selbst
+   * oeffnen darf, waere ein Klick ohne Ende.
+   */
+  allowPopup?: boolean;
 }
 
 export interface FileExplorerHandle {
@@ -329,6 +380,7 @@ function PropertiesDialog({ target, onClose, t }: { target: SelectionEntry; onCl
   return (
     <div
       className="omp-modal-backdrop"
+      data-nested-overlay
       style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)" }}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
@@ -426,6 +478,119 @@ function PropertiesDialog({ target, onClose, t }: { target: SelectionEntry; onCl
   );
 }
 
+/**
+ * Der KOMPLETTE Explorer in einem grossen, zentrierten Fenster.
+ *
+ * Bewusst kein Bild-Popup und kein Dialog mit einer Bestaetigung: hier steht
+ * der ganze Explorer — Baum, Breadcrumb, Toolbar, Aenderungsliste, Git-Status.
+ * Die Bildvorschau rendert die Instanz darin selbst, weil sie deren
+ * Preview-State besitzt; dieses Fenster gibt es dafuer nicht noch einmal.
+ *
+ * Sie bleibt bewusst eine eigene Komponente in dieser Datei. `PropertiesDialog`
+ * oben steht aus demselben Grund hier, und beide bekommen die Daten ueber
+ * Props statt ueber einen gemeinsamen Zustand.
+ *
+ * Die Fenster-Instanz bekommt kein `onAtMention`/`onAtMentions`. Eine Mention
+ * aus einem Fenster heraus schreibt in den Chat, den der Nutzer gar nicht
+ * ansieht; die Seitenleiste bleibt der Ort, von dem aus man den Chat fuellt.
+ */
+function FileExplorerWindow({
+  cwd,
+  onOpenFile,
+  changesCollapsed,
+  initialViewState,
+  onViewStateChange,
+  onClose,
+  t,
+}: {
+  cwd: string;
+  onOpenFile: OpenFileHandler;
+  changesCollapsed: boolean;
+  initialViewState?: ExplorerViewState;
+  onViewStateChange: (view: ExplorerViewState) => void;
+  onClose: () => void;
+  t: Translate;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      /**
+       * In diesem Fenster liegen die Dialoge der inneren Explorer-Instanz:
+       * Bildvorschau, Zielordner und Properties. Jeder von ihnen hat seinen
+       * eigenen `document`-Listener, und `stopPropagation` wirkt zwischen
+       * Geschwistern auf demselben Knoten nicht — ein Tastendruck wuerde sonst
+       * alle Ebenen auf einmal schliessen. Deshalb entscheidet nicht die
+       * Reihenfolge der Listener, sondern das DOM: ist der Tastendruck in
+       * einer Ebene gelandet, die selbst noch etwas offen haelt, schliesst
+       * dieses Fenster nicht.
+       *
+       * `preventDefault` genuegt als Signal, weil die Bildvorschau es fuer ihre
+       * Zoomtasten setzt, aber nicht fuer Escape. Der Test auf einen tieferen
+       * Dialog ist deshalb der verlaessliche: er fragt ab, ob zwischen dem
+       * Tastendruck und diesem Fenster noch etwas liegt.
+       */
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-nested-overlay]")) return;
+      onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className={`omp-modal-backdrop ${windowStyles.backdrop}`}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        className={`omp-modal-panel ${windowStyles.panel}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
+        <div className={windowStyles.header}>
+          <span id={titleId} className={windowStyles.title} title={cwd}>
+            {t("files.explorerWindowTitle")}: {cwd}
+          </span>
+          <button
+            type="button"
+            className={`omp-press ${windowStyles.iconButton}`}
+            onClick={onClose}
+            title={t("i18n.close")}
+            aria-label={t("i18n.close")}
+          >
+            <svg className={windowStyles.glyph} viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className={windowStyles.body}>
+          <FileExplorer
+            cwd={cwd}
+            onOpenFile={onOpenFile}
+            initialViewState={initialViewState}
+            onViewStateChange={onViewStateChange}
+            changesCollapsed={changesCollapsed}
+            allowPopup={false}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface ExplorerToolbarProps {
   selection: SelectionEntry[];
   uploadBusy: boolean;
@@ -438,6 +603,12 @@ interface ExplorerToolbarProps {
   onMoveTo: () => void;
   onClearSelection: () => void;
   onProperties: () => void;
+  /**
+   * Oeffnet den Explorer in einem eigenen Fenster. Nur gesetzt, wenn die
+   * aufrufende Instanz den Knopf erlauben laesst — die Instanz im Fenster
+   * uebergibt bewusst keinen Wert.
+   */
+  onOpenPopup?: () => void;
   t: Translate;
 }
 
@@ -477,6 +648,7 @@ function ExplorerToolbar({
   onMoveTo,
   onClearSelection,
   onProperties,
+  onOpenPopup,
   t,
 }: ExplorerToolbarProps) {
   // `true` heisst: das Namensfeld ist offen. Der Text selbst liegt im
@@ -602,6 +774,27 @@ function ExplorerToolbar({
           <path d="M5 20h14" />
         </svg>
       </button>
+
+      {/* Das grosse Fenster. Ohne `onOpenPopup` faellt der Knopf weg — das ist
+          der Rekursionsschutz fuer die Instanz, die im Fenster selbst sitzt. */}
+      {onOpenPopup && (
+        <button
+          type="button"
+          className="omp-press"
+          title={t("files.toolbarOpenWindow")}
+          aria-label={t("files.toolbarOpenWindow")}
+          style={TOOLBAR_BUTTON_STYLE}
+          onClick={onOpenPopup}
+          onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+          onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M3 9h18" />
+            <path d="M8 14h8" />
+          </svg>
+        </button>
+      )}
 
       {selection.length > 0 && (
         <>
@@ -784,6 +977,22 @@ function TreeNode({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
+
+  // Ein wiederhergestellter Zustand kann einen Ordner bereits als offen
+  // ausweisen, ohne dass seine Kinder je geladen wurden — die Zeile ist frisch
+  // gemountet, also ist `loaded` noch false und der Effekt oben greift nicht.
+  // Ohne diesen zweiten Effekt stuende das Chevron auf offen und der Ordner
+  // bliebe leer.
+  //
+  // Bewusst NUR beim Mount: der normale Weg zum Aufklappen ist der Chevron,
+  // der `loadChildren` selbst aufruft. Ein Effekt auf `[open]` wuerde denselben
+  // Ordner ein zweites Mal laden, weil `loaded` beim Rendern des Chevrons noch
+  // false ist. Ein Ordner, der beim Mount offen ist, kann dagegen nur aus
+  // `initialViewState` stammen.
+  useEffect(() => {
+    if (open && !loaded) loadChildren();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleClick = useCallback((event: React.MouseEvent) => {
     // Auswahl laeuft ueber Strg/Cmd-Klick, nicht ueber den einfachen Klick.
@@ -1250,17 +1459,22 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   onRefresh,
   changesCollapsed,
   onChangesCountChange,
+  initialViewState,
+  onViewStateChange,
+  allowPopup = true,
 }, ref) {
   const { t } = useI18n();
   const [roots, setRoots] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(initialViewState?.expandedPaths ?? new Set());
   // The directory currently shown at the top of the tree. Defaults to the
   // `cwd` prop (the project root) and updates when the user navigates up or
   // down via the breadcrumb, the Up button, or clicking a folder row. The
   // external `cwd` prop is the project root and never changes from inside.
-  const [currentPath, setCurrentPath] = useState<string>(cwd);
+  // `initialViewState` hat Vorrang: es ist der Blick, den eine gerade neu
+  // gemountete Instanz (das grosse Fenster) uebernimmt.
+  const [currentPath, setCurrentPath] = useState<string>(initialViewState?.currentPath ?? cwd);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
   // Bestaetigung fuer den Refresh-Button. Zwei Sekunden gruen, dann faellt der
   // Haken wieder weg — ohne sie bliebe bei unveraendertem Baum kein Merkmal,
@@ -1291,12 +1505,32 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   // Grosse Bildvorschau. Eine Datei im Ziel reicht, solange keine Serie
   // geoeffnet wurde; dann liefert der Dialog onNext/onPrev selbst.
   const [imagePreview, setImagePreview] = useState<{ path: string; name: string } | null>(null);
+  // GROSSES FENSTER. Der Blick auf den Baum des Fensters (`popupViewState`)
+  // lebt hier, nicht in der Fenster-Komponente: das Fenster wird beim
+  // Schliessen aus dem DOM entfernt und verliere damit seinen eigenen State.
+  const [popupOpen, setPopupOpen] = useState(false);
+  const [popupViewState, setPopupViewState] = useState<ExplorerViewState | null>(null);
   const [actionNotice, setActionNotice] = useState<FileActionNotice | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevCwdRef = useRef<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
   const uploadBusy = uploadPhase !== "idle";
+
+  /**
+   * Meldet Pfad und aufgeklappte Aeste nach aussen, damit die aufrufende
+   * Instanz sie als Startzustand fuer die naechste bekommt.
+   *
+   * Der Effekt haengt an genau diesen zwei Werten, nicht am Callback: die
+   * aufrufende Instanz gibt bei jedem Rendern eine neue Pfeilfunktion, und
+   * haenge der Effekt daran, meldete die Instanz ihren Zustand in jedem
+   * Rendern zurueck und wuerde sich selbst wieder aufrufen. `sameViewState`
+   * faengt das zusätzlich ab, sodass auch inhaltlich gleiche Meldungen den
+   * Zustand der aufrufenden Seite unberuehrt lassen.
+   */
+  useEffect(() => {
+    onViewStateChange?.({ currentPath, expandedPaths });
+  }, [currentPath, expandedPaths, onViewStateChange]);
 
   const gitStatusByPath = useMemo(() => new Map(
     gitFiles.map((status) => [normalizeFilePathSlashes(status.filePath), status]),
@@ -1381,8 +1615,27 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setSelection(new Map());
   }, []);
 
+  /**
+   * Nimmt den gemeldeten Blick des Fenster-Explorers entgegen, aber nur wenn er
+   * sich wirklich geaendert hat. Ohne diese Pruefung wuerde jedes Auf- und
+   * Zuklappen einen neuen Zustand mit gleicher Bedeutung setzen und die
+   * Seitenleiste neu rendern, waehrend der Inhalt unveraendert bleibt.
+   */
+  const handlePopupViewState = useCallback((view: ExplorerViewState) => {
+    setPopupViewState((previous) => previous && sameViewState(previous, view) ? previous : view);
+  }, []);
+
   const openImagePreview = useCallback((filePath: string, name: string) => {
     setImagePreview({ path: filePath, name });
+  }, []);
+
+  /**
+   * Oeffnet den Explorer im grossen Fenster. Der mitgegebene Blick ist der
+   * Stand, den der zuletzt offene Fenster-Explorer gemeldet hat — er ist beim
+   * ersten Oeffnen `null`, dann startet das Fenster bei `cwd`.
+   */
+  const openPopup = useCallback(() => {
+    setPopupOpen(true);
   }, []);
 
   const handleMutated = useCallback(() => {
@@ -1602,7 +1855,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   }, []);
 
   useEffect(() => {
-    const cwdChanged = prevCwdRef.current !== cwd;
+    // Der ERSTE Lauf ist kein cwd-Wechsel. `prevCwdRef` ist absichtlich `null`
+    // statt `cwd`, damit sich beides unterscheiden laesst: als Wechsel gewertet
+    // wuerde der erste Lauf genau den Blick aus `initialViewState` wieder
+    // wegraeumen, den diese Instanz gerade uebernommen hat. Zurueckgesetzt
+    // wird nur beim echten Wechsel des Projektordners; die Ladeanzeige
+    // erscheint in beiden Faellen.
+    const firstRun = prevCwdRef.current === null;
+    const cwdChanged = !firstRun && prevCwdRef.current !== cwd;
     prevCwdRef.current = cwd;
 
     // Reset expanded state and snap navigation back to the project root
@@ -1617,7 +1877,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setCurrentPath(cwd);
     }
 
-    setLoading(cwdChanged);
+    setLoading(firstRun || cwdChanged);
     setError(null);
     let cancelled = false;
     fetchEntries(currentPath)
@@ -1840,6 +2100,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               const [first] = [...selection.values()];
               if (first) setPropertiesTarget(first);
             }}
+            onOpenPopup={allowPopup ? openPopup : undefined}
             t={t}
           />
         </div>
@@ -1925,6 +2186,20 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           filePath={imagePreview.path}
           fileName={imagePreview.name}
           onClose={() => setImagePreview(null)}
+        />
+      )}
+      {popupOpen && (
+        // Beim Schliessen faellt `popupOpen` auf `false` und der ganze Baum
+        // wird aus dem DOM entfernt. `popupViewState` ueberlebt das und ist
+        // der Startzustand des naechsten Fensters.
+        <FileExplorerWindow
+          cwd={cwd}
+          onOpenFile={onOpenFile}
+          changesCollapsed={changesCollapsed}
+          initialViewState={popupViewState ?? undefined}
+          onViewStateChange={handlePopupViewState}
+          onClose={() => setPopupOpen(false)}
+          t={t}
         />
       )}
       {actionNotice && (

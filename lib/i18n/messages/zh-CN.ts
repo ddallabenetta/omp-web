@@ -248,6 +248,8 @@ export const zhCNLocale: LocalePlugin = {
     "files.toolbarNewFolder": "新建文件夹…",
     "files.toolbarRefresh": "刷新",
     "files.toolbarUpload": "上传文件…",
+    "files.toolbarOpenWindow": "在大窗口中打开资源管理器",
+    "files.explorerWindowTitle": "资源管理器",
     "files.toolbarCopyTo": "复制到…",
     "files.toolbarMoveTo": "移动到…",
     "files.toolbarDownload": "下载",

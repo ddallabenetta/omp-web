@@ -503,6 +503,7 @@ export function FileBrowserDialog({
   return (
     <div
       className={`omp-modal-backdrop ${styles.backdrop}`}
+      data-nested-overlay
       onClick={(event) => {
         if (event.target === event.currentTarget && !busy) onCancel();
       }}

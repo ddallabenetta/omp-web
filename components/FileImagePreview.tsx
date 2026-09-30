@@ -372,6 +372,7 @@ export function FileImagePreview({
   return (
     <div
       className={`omp-modal-backdrop ${styles.backdrop}`}
+      data-nested-overlay
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}

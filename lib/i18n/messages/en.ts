@@ -248,6 +248,8 @@ export const enLocale: LocalePlugin = {
     "files.toolbarNewFolder": "New folder…",
     "files.toolbarRefresh": "Refresh",
     "files.toolbarUpload": "Upload files…",
+    "files.toolbarOpenWindow": "Open explorer in a large window",
+    "files.explorerWindowTitle": "Explorer",
     "files.toolbarCopyTo": "Copy to…",
     "files.toolbarMoveTo": "Move to…",
     "files.toolbarDownload": "Download",
