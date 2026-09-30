@@ -250,6 +250,7 @@ export const zhCNLocale: LocalePlugin = {
     "files.toolbarUpload": "上传文件…",
     "files.toolbarOpenWindow": "在大窗口中打开资源管理器",
     "files.explorerWindowTitle": "资源管理器",
+    "files.explorerWindowNoTab": "点击文件即可在此窗口中打开，标签页不会离开本窗口。",
     "files.toolbarCopyTo": "复制到…",
     "files.toolbarMoveTo": "移动到…",
     "files.toolbarDownload": "下载",

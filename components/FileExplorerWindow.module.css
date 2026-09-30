@@ -4,15 +4,26 @@
  * bedienen wie in der Seitenleiste, nur mit mehr Platz fuer lange Pfade und
  * breite Aenderungslisten.
  *
- * Die Masse sind das Argument gegen kleinere Werte. `FileImagePreview`
- * braucht 960 Pixel fuer eine Bildvorschau, `FileBrowserDialog` 720 fuer
- * eine Ordnerliste — beides Ansichten, die man ansieht und dann wegklickt.
- * Der Explorer wird darin dagegen gelesen, verglichen und bedient: Pfadnamen
- * und Dateinamen stehen nebeneinander, die Aenderungsliste fuehrt
- * Statuskuerzel, Name und Zeilenzahlen in einer Zeile. 1160 Pixel geben
- * beiden Spalten Luft, ohne auf einem 1280er-Bildschirm schon die Ringe
- * knapp zu machen. 85vh laesst darunter genug Zeilen fuer einen Bildschirm
- * voller Aenderungen und haelt die Kopfzeile des Panels sichtbar.
+ * Die Groesse ist eine Obergrenze, keine Vorgabe. Statt 1160 x 85vh gibt es
+ * weder eine Breite noch eine Hoehe: `width: fit-content` und die fehlende
+ * `height` lassen das Panel mit seinem Inhalt wachsen, `max-width: 90vw` und
+ * `max-height: 90vh` setzen die Obergrenze. Ein Explorer mit drei Dateien
+ * ist damit ein kleines Fenster, einer mit aufgeklappter Aenderungsliste ein
+ * grosses — ohne dass eine Zahl im Stylesheet am Viewport des Nutzers klebt.
+ * Die 90 Prozent sind zugleich der Rand: `.backdrop` haelt 5vh/5vw Abstand,
+ * zusammen also 10 Prozent ringsum, und auf einem Telefon passt die
+ * Ueberlagerung von Kopfzeile, Tab-Leiste, Explorer und Dateiinhalt auf den
+ * Bildschirm, ohne dass eine Zeile abgeschnitten wird.
+ *
+ * Die Obergrenze greift nur, wenn die Flex-Kinder schrumpfen duerfen. Sie
+ * tun es nicht von allein: ein Flex-Kind hat `min-height: auto`, und das ist
+ * die Inhaltshoehe in ihrer natuerlichen Groesse. Ohne `min-height: 0`
+ * schiebt der Baum das Panel ueber `max-height` hinaus und der Inhalt laeuft
+ * ueber den Rand, statt im Panel zu scrollen. Deshalb traegt der scrollende
+ * Abschnitt `.explorer` und der Inhaltsbereich `.content` je ein
+ * `min-height: 0` (waagerecht `min-width: 0`) — dort und nicht am Panel,
+ * weil nur die scrollenden Abschnitte die Obergrenze zurueckgeben duerfen,
+ * wenn sie zu gross werden.
  *
  * Die Farben kommen aus den Theme-Tokens; hier steht nur Layout und Fokusring.
  */
@@ -28,17 +39,31 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Die Haelfte des Randes, den das Panel sich selbst zuteilt. 5vw/5vh
+   * passen genau zu den 90vw/90vh des Panels: der Rahmen um das Fenster
+   * ist damit in beiden Richtungen gleich, und der Wert haengt nicht an
+   * einer festen Pixelzahl, die auf einem Telefon den Rand wegisst. */
+  padding: 5vh 5vw;
   background: rgba(0, 0, 0, 0.6);
 }
 
 .panel {
   display: flex;
   flex-direction: column;
-  width: 1160px;
-  max-width: 100%;
-  height: 85vh;
-  max-height: 100%;
+  /* `fit-content` ist das Auto-Sizing: die Breite folgt dem Inhalt (dem
+   * Baum, dem Breadcrumb, dem Dateinamen) und faellt nur unter die
+   * Obergrenze. `max-width` steht zusaetzlich da, damit die 90 Prozent
+   * nicht von der `fit-content`-Rechnung des Backdrops abhaengen. */
+  width: fit-content;
+  max-width: 90vw;
+  /* Senkrecht dieselbe Logik: keine `height`, also waechst das Panel mit
+   * dem Inhalt, und `max-height` setzt die Obergrenze. Das Zentrieren des
+   * Backdrops kann dabei nichts ueber den Rand hinaus schieben, weil das
+   * Panel genau so hoch werden kann wie der Innenraum des Backdrops
+   * (100vh - 2 x 5vh = 90vh). Sobald die Grenze greift, schrumpfen die
+   * beiden scrollenden Abschnitte (`flex-shrink: 1`, `min-height: 0`) und
+   * der Inhalt waechst nach oben in den Bildschirm statt daneben vorbei. */
+  max-height: 90vh;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -107,13 +132,72 @@
   stroke-linejoin: round;
 }
 
+/* ---- Tab-Leiste ---- */
+
+/* `flex-shrink: 0` wie in der Kopfzeile: die Leiste ist eine Zeile, keine
+ *Flaeche, die dem Inhalt Platz weichen darf. `min-width: 0` erlaubt ihr, unter
+ * 90vw schmaler zu werden als ihre Tabs, damit `overflowX` der Leiste greift
+ * und die Tabs waagerecht wegscrollen. Der Rand kommt von `TabBar` selbst. */
+.tabBar {
+  flex-shrink: 0;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Die Leiste selbst bekommt bewusst KEIN `touch-action`. `none` gehoert auf
+ * das einzelne Tab-Element (setzt `TabBar`, sobald `onReorder` uebergeben
+ * wird): nur dann nimmt das Ziehen dem Tab den Browser-Scroll, und die
+ * Leiste bleibt zwischen den Tabs weiterhin wischbar. */
+
+/* ---- Explorer-Baum ---- */
+
 /* Der Explorer liefert `minHeight: 100%` statt einer eigenen ScrollFlaeche;
  * in der Seitenleiste scrollt der Container darum herum. Hier gibt es keinen
- * ausseren Container, also scrollt die Flaeche hier und der Baum wächst
- * darunter nach unten, statt abgeschnitten zu werden. */
-.body {
-  flex: 1;
+ * ausseren Container, also scrollt die Flaeche hier und der Baum waechst
+ * darunter nach unten, statt abgeschnitten zu werden.
+ *
+ * `flex: 0 1 auto` statt `flex: 1`: `flex: 1` setzt `flex-basis: 0`, und
+ * eine Basis von 0 hiesse, das Panel waechst gar nicht mit dem Baum — beide
+ * Flex-Kinder bekaemen dann stets die gleiche Resthoehe, auch wenn der Baum
+ * drei Zeilen hat. Mit `auto` als Basis waechst der Abschnitt mit seinem
+ * Inhalt und gibt erst dann Platz ab, wenn das Panel an seine 90vh stoesst.
+ *
+ * `min-height: 0` ist hier Pflicht und nicht Kosmetik: `.explorer` ist ein
+ * Flex-Kind des Panels und haette sonst `min-height: auto`, also die volle
+ * Inhaltshoehe als Untergrenze. Der Baum wuerde das Panel ueber
+ * `max-height` hinaus aufziehen; die `90vh`-Grenze waere wirkungslos. */
+.explorer {
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* ---- Inhalt des aktiven Tabs ---- */
+
+/* Derselbe Trick an der zweiten Flex-Stufe, aus demselben Grund. `FileViewer`
+ * setzt selbst `height: 100%` und `overflow: hidden` auf seiner Schale und
+ * scrollt innen; ohne `min-height: 0` waere der Inhalt zu hoch, sein
+ * Bildschirm zu klein, und der Inhalt liefe aus dem Panel. */
+.content {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* Leerzustand: lesbarer Hinweis statt leerem Rechteck. `auto` statt `0`, weil
+ * ohne Tab der Baum allein steht und das Fenster dann nur so hoch sein soll,
+ * wie der Baum braucht. */
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
 }

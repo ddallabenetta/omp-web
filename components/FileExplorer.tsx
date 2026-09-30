@@ -16,6 +16,8 @@ import { isImagePath } from "@/lib/file-types";
 import { FileActionToast, FileContextMenu, type FileActionNotice, type FileMenuTarget } from "./FileContextMenu";
 import { FileBrowserDialog } from "./FileBrowserDialog";
 import { FileImagePreview } from "./FileImagePreview";
+import { FileViewer } from "./FileViewer";
+import { TabBar, type FileTab } from "./TabBar";
 import { useI18n } from "@/hooks/useI18n";
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -490,13 +492,24 @@ function PropertiesDialog({ target, onClose, t }: { target: SelectionEntry; onCl
  * oben steht aus demselben Grund hier, und beide bekommen die Daten ueber
  * Props statt ueber einen gemeinsamen Zustand.
  *
+ * Eigener Dateizustand, nicht der des Hauptpanels. Ein Klick auf eine Datei
+ * im Fenster oeffnet einen Tab *hier* und sonst nirgends: `handleOpenFile`
+ * unten setzt genau diesen State und ruft nichts von aussen. Vorher lief
+ * derselbe Aufruf durch wie in der Seitenleiste, landete also im rechten
+ * Panel der Hauptseite — der Nutzer sah die Datei nie, waehrend er im
+ * Explorer stand. Der Tab-Zustand gehoert diesem Fenster und wird mit ihm
+ * aus dem DOM entfernt; beim naechsten Oeffnen ist er leer. Das ist gewollt:
+ * es ist ein Arbeitswerkzeug fuer einen Durchgang, kein dauerhafter
+ * Dateistapel. Wer das Fenster behalten will, laesst es offen.
+ *
  * Die Fenster-Instanz bekommt kein `onAtMention`/`onAtMentions`. Eine Mention
  * aus einem Fenster heraus schreibt in den Chat, den der Nutzer gar nicht
  * ansieht; die Seitenleiste bleibt der Ort, von dem aus man den Chat fuellt.
+ * Aus demselben Grund bekommen die Tabs hier auch kein `onMentionLines` und
+ * kein `onAtMention` im `FileViewer`.
  */
 function FileExplorerWindow({
   cwd,
-  onOpenFile,
   changesCollapsed,
   initialViewState,
   onViewStateChange,
@@ -504,7 +517,6 @@ function FileExplorerWindow({
   t,
 }: {
   cwd: string;
-  onOpenFile: OpenFileHandler;
   changesCollapsed: boolean;
   initialViewState?: ExplorerViewState;
   onViewStateChange: (view: ExplorerViewState) => void;
@@ -513,6 +525,56 @@ function FileExplorerWindow({
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const [tabs, setTabs] = useState<FileTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  /**
+   * Der einzige Weg aus dem Explorer dieses Fensters in einen Tab. Gleiche
+   * Tab-Id und gleiche Duplikatregel wie im Hauptpanel (`AppShell.tsx`): ein
+   * zweiter Klick auf dieselbe Datei aktiviert den vorhandenen Tab, statt einen
+   * zweiten anzulegen. `modeHint` wandert mit, damit ein Klick in der
+   * Aenderungsliste weiterhin die Diff-Ansicht oeffnet.
+   */
+  const handleOpenFile = useCallback((filePath: string, fileName: string, options?: OpenFileOptions) => {
+    const tabId = `file:${filePath}`;
+    const modeHint = options?.modeHint;
+    setTabs((prev) => {
+      const existing = prev.find((tab) => tab.id === tabId);
+      if (!existing) {
+        return [...prev, { kind: "file", id: tabId, label: fileName, filePath, initialDisplayMode: modeHint }];
+      }
+      if (!modeHint || existing.initialDisplayMode === modeHint) return prev;
+      return prev.map((tab) => (tab.id === tabId ? { ...tab, initialDisplayMode: modeHint } : tab));
+    });
+    setActiveTabId(tabId);
+  }, []);
+
+  const activeTab = tabs.find((tab) => tab.id === activeTabId);
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    setTabs((prev) => {
+      const next = prev.filter((tab) => tab.id !== tabId);
+      setActiveTabId((current) => {
+        if (current !== tabId) return current;
+        // Wie im Hauptpanel: der letzte linke Nachbar wird aktiv. Mit dem
+        // leeren Leerzustand waere sonst jeder Klick auf das X ein Sprung in
+        // den Leer-Zustand.
+        return next.length > 0 ? next[next.length - 1].id : null;
+      });
+      return next;
+    });
+  }, []);
+
+  const handleReorder = useCallback((tabId: string, beforeId: string) => {
+    setTabs((prev) => {
+      const from = prev.findIndex((tab) => tab.id === tabId);
+      if (from < 0) return prev;
+      const without = prev.filter((tab) => tab.id !== tabId);
+      const to = beforeId ? without.findIndex((tab) => tab.id === beforeId) : without.length;
+      if (to < 0) return prev;
+      return [...without.slice(0, to), prev[from], ...without.slice(to)];
+    });
+  }, []);
 
   useEffect(() => {
     panelRef.current?.focus();
@@ -576,16 +638,50 @@ function FileExplorerWindow({
           </button>
         </div>
 
-        <div className={windowStyles.body}>
+        {/* Waagerechte Leiste direkt unter der Kopfzeile, darunter der Baum
+            und daneben der Inhalt. Waagerecht, weil ein senkrechter Streifen
+            dem Baum genau die Breite genommen haette, um die es hier geht. */}
+        {tabs.length > 0 && (
+          <div className={windowStyles.tabBar}>
+            <TabBar
+              tabs={tabs}
+              activeTabId={activeTabId ?? ""}
+              onSelectTab={setActiveTabId}
+              onCloseTab={handleCloseTab}
+              onReorder={handleReorder}
+            />
+          </div>
+        )}
+
+        <div className={windowStyles.explorer}>
           <FileExplorer
             cwd={cwd}
-            onOpenFile={onOpenFile}
+            onOpenFile={handleOpenFile}
             initialViewState={initialViewState}
             onViewStateChange={onViewStateChange}
             changesCollapsed={changesCollapsed}
             allowPopup={false}
           />
         </div>
+
+        {/* Derselbe `FileViewer` wie im rechten Panel der Hauptseite. Eine
+            eigene Ansicht hier wuerde von der Panel-Fassung abdriften, und
+            gerade der Diff- und der Markdown-Umschalter sind zu gross, um
+            sie zu duplizieren. Kein `sourceSessionId`, weil der Explorer
+            bereits auf `cwd` steht; ohne die Mention-Props, weil sie in den
+            Chat der Hauptseite schreiben wuerden, den man hier nicht sieht. */}
+        {activeTab ? (
+          <div className={windowStyles.content}>
+            <FileViewer
+              filePath={activeTab.filePath}
+              cwd={cwd}
+              initialDisplayMode={activeTab.initialDisplayMode}
+              onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath))}
+            />
+          </div>
+        ) : (
+          <div className={windowStyles.empty}>{t("files.explorerWindowNoTab")}</div>
+        )}
       </div>
     </div>
   );
@@ -2194,7 +2290,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         // der Startzustand des naechsten Fensters.
         <FileExplorerWindow
           cwd={cwd}
-          onOpenFile={onOpenFile}
           changesCollapsed={changesCollapsed}
           initialViewState={popupViewState ?? undefined}
           onViewStateChange={handlePopupViewState}
