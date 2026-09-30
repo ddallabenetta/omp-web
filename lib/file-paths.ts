@@ -13,6 +13,23 @@ export function encodeFilePathForApi(filePath: string): string {
     .join("/");
 }
 
+/**
+ * Rebuild a filesystem path from the catch-all route's decoded segments.
+ *
+ * Segments arrive percent-decoded, so a `%2F` inside a file name has already
+ * become a real slash by the time it gets here. That is a property of the URL
+ * scheme rather than something this function introduces, and it is why the
+ * segments are rejoined verbatim instead of being re-validated: the allowlist
+ * check downstream resolves the result and is what actually bounds access.
+ */
+export function filePathFromSegments(segments: string[]): string {
+  const joined = segments.join("/");
+  if (/^[a-zA-Z]:[\\/]/.test(joined) || joined.startsWith("\\\\")) {
+    return joined.replace(/\\/g, "/");
+  }
+  return "/" + joined.replace(/^\/+/, "");
+}
+
 export function getFileName(filePath: string): string {
   const normalized = normalizeFilePathSlashes(filePath).replace(/\/+$/, "");
   return normalized.split("/").pop() ?? normalized;

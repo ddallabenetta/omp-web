@@ -5,9 +5,8 @@ import {
   getAllowedFileRoots,
   isExistingFilePathAllowed,
   isFilePathAllowed,
-  isWindowsAbsolutePath,
-  normalizeSlashes,
 } from "@/lib/file-access";
+import { filePathFromSegments } from "@/lib/file-paths";
 import {
   DOCX_PREVIEW_MAX_BYTES,
   IMAGE_PREVIEW_MAX_BYTES,
@@ -67,13 +66,6 @@ function getLanguage(filePath: string): string {
   if (base === "makefile" || base === "gnumakefile") return "makefile";
   const ext = base.split(".").pop() ?? "";
   return EXT_TO_LANGUAGE[ext] ?? "text";
-}
-
-function filePathFromSegments(segments: string[]): string {
-  const joined = segments.join("/");
-  const slashJoined = normalizeSlashes(joined);
-  if (isWindowsAbsolutePath(slashJoined)) return slashJoined;
-  return "/" + joined.replace(/^\/+/, "");
 }
 
 function parseFileRequestType(value: string): FileRequestType | null {
