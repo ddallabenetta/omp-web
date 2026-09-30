@@ -94,14 +94,17 @@ export async function getWritableRoots(identity: WebIdentity | null): Promise<Se
     // compromised admin password becomes arbitrary write, including SSH keys
     // of the account the service runs as.
     //
-    // It is worth stating why a test that only watches the refusals would not
+    // It is worth stating why a test that only watches one refusal would not
     // notice. `/etc/hostname` is refused for two independent reasons: the
     // filesystem root is filtered out here, *and* the file sits in no project.
-    // A test asserting the 403 passes either way, so it proves nothing about
-    // this line. `lib/write-access.identity.test.mjs` therefore asserts the
-    // filtered *set* — that no write root is a bare filesystem root — which is
-    // the property that actually does the work. Removing the line fails five
-    // tests, not one.
+    // A test asserting that single 403 passes either way, so it proves nothing
+    // about this line. `lib/write-access.identity.test.mjs` therefore asserts
+    // the filtered *set* — that no write root is a bare filesystem root — which
+    // is the property that does the work. Deleting this line fails eight tests
+    // across the two write-access suites; the ones that watch system-path
+    // refusals fail too, but only because an unbounded root also swallows
+    // `/usr/bin` and `/var/lib/dpkg`, not because the assertion is about this
+    // line specifically.
     if (resolved === path.parse(resolved).root) continue;
     roots.add(resolved);
   }
