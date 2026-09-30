@@ -156,6 +156,21 @@ shell gets no `uid`/`gid` switch, so anyone holding an open terminal can read
 anything that account can read. Per-account terminals are bookkeeping, not
 containment.
 
+The same shape applies to the other per-account boundaries. File access,
+workspace validation, and session ownership are all **assignments, not
+containment**: each is decided from data the service process itself can write — a
+requested path, a `cwd` field inside a session file, a terminal id. The session
+files are ordinary files in one shared tree owned by the account the service
+runs as, and that account can write them. So whoever can write that data decides
+what it points at: editing the `cwd` of someone else's session file moves that
+session into your own home as far as the service is concerned.
+
+These checks stop accounts from seeing each other by accident and through the
+routes the service exposes. They do not survive someone who edits the underlying
+files, and closing that would mean giving each account its own OS user, not
+sharpening a check. Read the per-account features as separation between honest
+users of one service, not as isolation between people sharing a host.
+
 ## Sessions and what ends them
 
 A successful sign-in sets an `omp_session` cookie instead of asking for the

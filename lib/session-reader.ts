@@ -78,15 +78,25 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
  * Wo die Dateien liegen und wer sie gehoeren, sind hier zwei getrennte Fragen.
  * Der Bestand beantwortet die erste klar: `SessionManager.listAll()` liest
  * `~/.omp/agent/sessions/<cwd-kodiert>/*.jsonl`, ein einziger gemeinsamer Baum
- * fuer alle Bediener, und der `cwd` steht im Header jeder Datei. Pro Nutzer
- * umziehen hiesse, jeden Prozess-Agent-Dir pro Request umzuschalten — das ist
- * eine Migration von Fremdbestand, keine Route, und sie waere hier nicht
- * rueckstandsfrei zu machen. Der Besitz ergibt sich deshalb aus dem `cwd`: eine
- * Session gehoert dem Nutzer, dessen Home sie enthaelt.
+ * fuer alle Bediener. Pro Nutzer umziehen hiesse, jeden Prozess-Agent-Dir pro
+ * Request umzuschalten — das ist eine Migration von Fremdbestand, keine Route,
+ * und sie waere hier nicht rueckstandsfrei zu machen. Der Besitz ergibt sich
+ * deshalb aus dem `cwd`: eine Session gehoert dem Nutzer, dessen Home sie
+ * enthaelt.
  *
  * Das ist dieselbe Grenze, die `cwd/validate` fuer Arbeitsverzeichnisse zieht,
  * und sie ist absichtlich dieselbe: ein Nutzer kann eine Session nicht in
  * fremder Home anlegen, also kann er auch keine dort erben.
+ *
+ * **Und sie ist eine Zuordnung, keine Kapselung.** Der `cwd` ist ein Feld im
+ * Inhalt der Datei, nicht eine Eigenschaft des Dateisystems: er steht nicht in
+ * der ersten Zeile, sondern in einer Folgezeile, und der Baum gehoert dem
+ * Konto, unter dem der Dienst laeuft. Wer dieses Konto ist, kann die Datei
+ * also auch umschreiben und damit die Zuordnung verschieben. Am geprueften
+ * Bestand: erste Zeile `['type','v','title','source','updatedAt','pad']`, der
+ * `cwd` in Zeile 2. Eine schaerfere Pruefung schliesst das nicht — das
+ * braucht ein eigenes OS-Benutzerkonto je Mandant, nicht eine andere Logik in
+ * dieser Funktion.
  *
  * Ein Admin sieht alles, weil sein Konto-Wurzelraum `/` ist.
  */

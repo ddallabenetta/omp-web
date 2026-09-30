@@ -46,14 +46,20 @@ export async function POST(req: Request) {
     // Fuer jeden anderen ist die eigene Home die Grenze, und die Pruefung hat
     // keinen Seiteneffekt.
     //
-    // allowFileRoot() waere hier der gefaehrlichste Hebel im ganzen Bestand: die
-    // Funktion mutiert eine prozess-globale Menge auf globalThis, aus der Read-
-    // UND Write-Roots gelesen werden. Ein Prozess bedient alle Bediener, also
-    // wuerde ein Nutzer die Menge fuer alle anderen mitvergroessern — und
-    // `/etc` waere ab da fuer die gesamte Lebensdauer des Prozesses erlaubt,
-    // nicht nur fuer die eine Anfrage. Ersatz: reine Pruefung, nichts wird
-    // gemerkt. Sie loest auf beiden Seiten auf, ein `~/link -> /etc` passt also
-    // nicht, nur weil der Link in der Home liegt.
+    // `allowFileRoot()` waere hier der gefaehrlichste Hebel im ganzen Bestand.
+    // Er schreibt in einen prozess-globalen Bestand, aus dem Read- UND
+    // Write-Roots gelesen werden, und dieser Bestand lebt so lange wie der
+    // Prozess: ein dort abgelegter Pfad waere nicht nur fuer diese eine Anfrage
+    // erlaubt, sondern fuer die gesamte Lebensdauer des Servers. Ersatz: reine
+    // Pruefung, nichts wird gemerkt. Sie loest auf beiden Seiten auf, ein
+    // `~/link -> /etc` passt also nicht, nur weil der Link in der Home liegt.
+    //
+    // Der Admin-Zweig oben ruft `allowFileRoot()` bewusst ohne Identitaet auf.
+    // Damit landet der Pfad im unclaimed Bucket, den ausschliesslich der
+    // Admin-Zweig von `getAdditionalAllowedRoots()` liest — eine Betreiber-
+    // freigabe, die bei niemand anderem landet. Ein Aufruf mit Identitaet waere
+    // zwar ebenfalls sicher, wuerde den Betriebshandgriff aber als persoenliche
+    // Freigabe buchen.
     if (!isPathInUserHome(identity, canonicalCwd)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
