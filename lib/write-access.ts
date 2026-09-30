@@ -87,24 +87,17 @@ export async function getWritableRoots(identity: WebIdentity | null): Promise<Se
     // sit at a drive root is still reachable through its own path, so nothing
     // real is lost.
     //
-    // This one line is the entire write boundary for an admin, and it is
-    // verified by mutation rather than by inspection: delete it, and
-    // `isWritePathAllowed("/etc/hostname", …)` flips from false to true — as do
-    // `/etc/passwd` and `/root/.ssh/authorized_keys`, which is to say a
-    // compromised admin password becomes arbitrary write, including SSH keys
-    // of the account the service runs as.
+    // This one line is the entire write boundary for an admin. Verified by
+    // mutation, not by inspection: delete it and `isWritePathAllowed` on an
+    // existing system file — `/etc/passwd` — flips from false to true, so a
+    // compromised admin password becomes arbitrary write.
     //
-    // It is worth stating why a test that only watches one refusal would not
-    // notice. `/etc/hostname` is refused for two independent reasons: the
-    // filesystem root is filtered out here, *and* the file sits in no project.
-    // A test asserting that single 403 passes either way, so it proves nothing
-    // about this line. `lib/write-access.identity.test.mjs` therefore asserts
-    // the filtered *set* — that no write root is a bare filesystem root — which
-    // is the property that does the work. Deleting this line fails eight tests
-    // across the two write-access suites; the ones that watch system-path
-    // refusals fail too, but only because an unbounded root also swallows
-    // `/usr/bin` and `/var/lib/dpkg`, not because the assertion is about this
-    // line specifically.
+    // A test watching only the refusals would not catch that, because such a
+    // file is refused for two independent reasons: this line, and the fact that
+    // it sits in no project. One refusal, two causes, no signal about which
+    // one is load-bearing. So the coverage asserts the filtered *set* — that no
+    // write root is a bare filesystem root — which is the property doing the
+    // work. See `lib/write-access.identity.test.mjs`.
     if (resolved === path.parse(resolved).root) continue;
     roots.add(resolved);
   }
