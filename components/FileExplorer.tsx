@@ -11,6 +11,7 @@ import {
   normalizeFilePathSlashes,
 } from "@/lib/file-paths";
 import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
+import { FileActionToast, FileContextMenu, type FileActionNotice, type FileMenuTarget } from "./FileContextMenu";
 import { useI18n } from "@/hooks/useI18n";
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -219,6 +220,7 @@ function TreeNode({
   expandedPaths,
   onToggleExpanded,
   onNavigate,
+  onContextMenu,
   refreshToken,
   highlightedPaths,
   gitStatusByPath,
@@ -233,6 +235,7 @@ function TreeNode({
   expandedPaths: Set<string>;
   onToggleExpanded: (fullPath: string, open: boolean) => void;
   onNavigate?: (fullPath: string) => void;
+  onContextMenu: (fullPath: string, name: string, isDir: boolean, x: number, y: number) => void;
   refreshToken: string;
   highlightedPaths: Set<string>;
   gitStatusByPath: Map<string, GitFileStatus>;
@@ -291,10 +294,17 @@ function TreeNode({
     if (next && !loaded) loadChildren();
   }, [loaded, loadChildren, node.fullPath, open, onToggleExpanded]);
 
+  const handleContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onContextMenu(node.fullPath, node.name, node.isDir, event.clientX, event.clientY);
+  }, [node.fullPath, node.isDir, node.name, onContextMenu]);
+
   return (
     <div>
       <div
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
@@ -459,6 +469,7 @@ function TreeNode({
               onAtMention={onAtMention}
               expandedPaths={expandedPaths}
               onToggleExpanded={onToggleExpanded}
+              onContextMenu={onContextMenu}
               refreshToken={refreshToken}
               highlightedPaths={highlightedPaths}
               gitStatusByPath={gitStatusByPath}
@@ -701,6 +712,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
   const [pendingConflict, setPendingConflict] = useState<PendingConflict | null>(null);
+  // Rechtsklick-Ziel in Viewport-Koordinaten. `null` heisst: Menue geschlossen.
+  const [menuTarget, setMenuTarget] = useState<FileMenuTarget | null>(null);
+  const [actionNotice, setActionNotice] = useState<FileActionNotice | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevCwdRef = useRef<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
@@ -753,6 +768,45 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setCurrentPath(homeDir);
     setExpandedPaths(new Set());
   }, [homeDir]);
+
+  // Das Menue haengt an einer Zeile, nicht an einem Element: der Pfad wandert
+  // mit dem Navigieren mit, und ein Klick auf Breadcrumb, Leerflaeche oder eine
+  // andere Zeile schliesst es, ohne dass diese Flaechen je einen Handler
+  // bekommen. Das `null` hier ist derselbe Zustand, den das Panel selbst
+  // ueber `onClose` zurueckmeldet.
+  const handleOpenContextMenu = useCallback((
+    fullPath: string,
+    name: string,
+    isDir: boolean,
+    x: number,
+    y: number,
+  ) => {
+    setMenuTarget({ x, y, path: fullPath, name, isDir });
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setMenuTarget(null);
+  }, []);
+
+  const handleMutated = useCallback(() => {
+    setTreeRefreshKey((key) => key + 1);
+  }, []);
+
+  // Fehler bleiben stehen, bis sie weggeklickt werden; Erfolgsmeldungen
+  // verschwinden von selbst, weil sie nur eine Bestaetigung sind.
+  const handleActionNotice = useCallback((notice: FileActionNotice) => {
+    clearTimeout(noticeTimerRef.current ?? undefined);
+    noticeTimerRef.current = null;
+    setActionNotice(notice);
+    if (notice.kind === "success") {
+      noticeTimerRef.current = setTimeout(() => {
+        noticeTimerRef.current = null;
+        setActionNotice(null);
+      }, 3200);
+    }
+  }, []);
+
+  useEffect(() => () => clearTimeout(noticeTimerRef.current ?? undefined), []);
 
   const applyUploadResult = useCallback((data: UploadResponse) => {
     const uploaded = data.uploaded ?? [];
@@ -935,7 +989,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   }, [cwd, onAtMentions, uploadSummary]);
 
   return (
-    <div style={{ minHeight: "100%" }}>
+    <div
+      style={{ minHeight: "100%" }}
+      // Rechtsklick auf die Wurzelflaeche: kein Systemmenue, das Menue
+      // gehoert zu einer Zeile, nicht zu jedem freien Stueck des Panels.
+      onContextMenu={(event) => {
+        if (event.target === event.currentTarget) event.preventDefault();
+      }}
+    >
       <input ref={uploadInputRef} type="file" multiple hidden onChange={handleUploadInput} />
       {showUploadFeedback && (
         <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
@@ -1105,6 +1166,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                   expandedPaths={expandedPaths}
                   onToggleExpanded={handleToggleExpanded}
                   onNavigate={handleNavigate}
+                  onContextMenu={handleOpenContextMenu}
                   refreshToken={refreshToken}
                   highlightedPaths={highlightedPaths}
                   gitStatusByPath={gitStatusByPath}
@@ -1120,6 +1182,18 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             </div>
           )}
         </div>
+      )}
+
+      {menuTarget && (
+        <FileContextMenu
+          target={menuTarget}
+          onClose={closeContextMenu}
+          onMutated={handleMutated}
+          onNotify={handleActionNotice}
+        />
+      )}
+      {actionNotice && (
+        <FileActionToast notice={actionNotice} onDismiss={() => setActionNotice(null)} />
       )}
     </div>
   );

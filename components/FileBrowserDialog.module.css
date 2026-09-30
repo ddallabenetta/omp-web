@@ -1,0 +1,341 @@
+/*
+ * Zielordner-Auswahl als ueberlagerndes Panel. Alle Farben kommen aus den
+ * Theme-Tokens; hier steht nur Layout, Zustand und Fokusring.
+ */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 720px;
+  max-width: 100%;
+  max-height: 80vh;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.24);
+}
+
+/* ---- Kopfzeile ---- */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.iconButton:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.iconButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.iconGlyph {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+/* ---- Breadcrumb ---- */
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+  overflow-x: auto;
+  color: var(--text-muted);
+  font: 11px var(--font-mono);
+  scrollbar-width: thin;
+  white-space: nowrap;
+}
+
+.crumbGroup {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.crumb {
+  max-width: 180px;
+  padding: 2px 5px;
+  overflow: hidden;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.crumb:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.crumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+}
+
+.crumbSeparator {
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.upButton {
+  margin-right: 4px;
+}
+
+/* ---- Listing ---- */
+
+.list {
+  flex: 1;
+  min-height: 0;
+  padding: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.entry {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: 11px var(--font-mono);
+  text-align: left;
+}
+
+.entry:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.entry:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.entry:disabled {
+  cursor: default;
+}
+
+/* Der aktive Listeneintrag (Pfeiltasten) nutzt denselben Hintergrund wie
+ * --bg-selected, damit "wo bin ich" nicht nur ueber den Fokusring lesbar ist. */
+.entry[data-active="true"] {
+  background: var(--bg-selected);
+}
+
+.entryName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryArrow {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.fileRow {
+  color: var(--text-dim);
+}
+
+.state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 16px;
+  color: var(--text-dim);
+  font: 11px var(--font-mono);
+  text-align: center;
+}
+
+.stateError {
+  color: var(--danger);
+}
+
+.errorRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--danger);
+  font: 11px/1.5 var(--font-mono);
+}
+
+.errorText {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.errorRetry {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 10px var(--font-mono);
+}
+
+.errorRetry:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.errorRetry:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ---- Fusszeile ---- */
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.currentPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font: 11px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.button {
+  flex: 0 0 auto;
+  padding: 5px 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 12px inherit;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.primary:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: var(--bg);
+}
