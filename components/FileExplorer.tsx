@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import { forwardRef, useState, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef } from "react";
 import { getFileIcon, FolderIcon } from "./FileIcons";
 import {
   encodeFilePathForApi,
@@ -12,8 +12,20 @@ import {
 } from "@/lib/file-paths";
 import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
 import { FileActionToast, FileContextMenu, type FileActionNotice, type FileMenuTarget } from "./FileContextMenu";
+import { FileBrowserDialog } from "./FileBrowserDialog";
 import { useI18n } from "@/hooks/useI18n";
 type Translate = ReturnType<typeof useI18n>["t"];
+
+/**
+ * Ein fuer die Toolbar ausgewaehlter Baumknoten. Der Pfad genuegt als Schluessel,
+ * Name und Ordner-Flag werden beim Klick mitgefuehrt, damit die Werkzeuge ohne
+ * Rueckgriff auf den Baum auskommen.
+ */
+interface SelectionEntry {
+  path: string;
+  name: string;
+  isDir: boolean;
+}
 
 interface FileEntry {
   name: string;
@@ -211,6 +223,419 @@ function DismissButton({ onClick, title }: { onClick: () => void; title: string 
   );
 }
 
+/** Bytestaende mit 1024er-Stufen, sonst sind grosse Dateien unlesbar. */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+interface FileMeta {
+  size: number;
+  mime: string;
+  language: string;
+}
+
+/**
+ * Eigenschaften eines Eintrags: Name, Ort, Groesse und Typ.
+ *
+ * `?type=meta` beantwortet nur Dateien und lehnt Ordner mit 400 ab, darum
+ * fragt der Dialog fuer Ordner ueber `?type=list` und zeigt die Zahl der
+ * enthaltenen Eintraege. Eine Aenderungszeit liefert keine der beiden Routen
+ * (das Listing fuellt `modified` bewusst nicht, `meta` kennt kein mtime) —
+ * sie wuerde hier erfunden, also bleibt die Zeile weg.
+ */
+function PropertiesDialog({ target, onClose, t }: { target: SelectionEntry; onClose: () => void; t: Translate }) {
+  const [meta, setMeta] = useState<FileMeta | null>(null);
+  const [itemCount, setItemCount] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    let cancelled = false;
+    const query = target.isDir ? "list" : "meta";
+    setMeta(null);
+    setItemCount(null);
+    setError(null);
+    void fetch(`/api/files/${encodeFilePathForApi(target.path)}?type=${query}`)
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({})) as Partial<FileMeta> & { entries?: unknown[]; error?: string };
+        if (cancelled) return;
+        if (!res.ok) { setError(data.error ?? `HTTP ${res.status}`); return; }
+        if (target.isDir) { setItemCount(data.entries?.length ?? 0); return; }
+        setMeta({ size: data.size ?? 0, mime: data.mime ?? "", language: data.language ?? "" });
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => { cancelled = true; };
+  }, [target]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    panelRef.current?.focus();
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="omp-modal-backdrop"
+      style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)" }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div
+        ref={panelRef}
+        className="omp-modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        style={{
+          width: 360,
+          maxWidth: "calc(100vw - 32px)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          padding: 14,
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.22)",
+          outline: "none",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+            {target.isDir ? <FolderIcon size={18} /> : getFileIcon(target.name, 18)}
+          </span>
+          <span id={titleId} style={{ minWidth: 0, fontSize: 13, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {target.name}
+          </span>
+        </div>
+
+        <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "5px 12px", margin: 0, fontSize: 11, minWidth: 0 }}>
+          <dt style={{ color: "var(--text-dim)" }}>{t("files.propertiesName")}</dt>
+          <dd style={{ margin: 0, color: "var(--text)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>{target.name}</dd>
+
+          <dt style={{ color: "var(--text-dim)" }}>{t("files.propertiesPath")}</dt>
+          <dd style={{ margin: 0, color: "var(--text)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>{target.path}</dd>
+
+          <dt style={{ color: "var(--text-dim)" }}>{t("files.propertiesSize")}</dt>
+          <dd style={{ margin: 0, color: "var(--text)", fontFamily: "var(--font-mono)" }}>
+            {error
+              ? "—"
+              : meta
+                ? formatFileSize(meta.size)
+                : target.isDir
+                  ? itemCount === null ? "…" : t("files.propertiesSizeFolder", { count: itemCount })
+                  : "…"}
+          </dd>
+
+          <dt style={{ color: "var(--text-dim)" }}>{t("files.propertiesType")}</dt>
+          <dd style={{ margin: 0, color: "var(--text)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
+            {target.isDir
+              ? t("files.propertiesFolder")
+              : error ? "—" : meta ? (meta.mime || "—") : "…"}
+          </dd>
+
+          {!target.isDir && !error && meta?.language && (
+            <>
+              <dt style={{ color: "var(--text-dim)" }}>{t("files.propertiesLanguage")}</dt>
+              <dd style={{ margin: 0, color: "var(--text)", fontFamily: "var(--font-mono)" }}>{meta.language}</dd>
+            </>
+          )}
+        </dl>
+
+        {error && (
+          <div role="alert" style={{ fontSize: 11, color: "var(--danger)", overflowWrap: "anywhere" }}>
+            {t("files.propertiesLoadFailed")}: {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            className="omp-press"
+            onClick={onClose}
+            style={{
+              height: 24,
+              padding: "0 10px",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              background: "transparent",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          >
+            {t("files.cancel")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface ExplorerToolbarProps {
+  selection: SelectionEntry[];
+  uploadBusy: boolean;
+  onNewFolder: (name: string) => void;
+  onRefresh: () => void;
+  onUpload: () => void;
+  onCopyTo: () => void;
+  onMoveTo: () => void;
+  onClearSelection: () => void;
+  onProperties: () => void;
+  t: Translate;
+}
+
+const TOOLBAR_BUTTON_STYLE: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 22,
+  height: 22,
+  padding: 0,
+  flexShrink: 0,
+  border: "none",
+  borderRadius: 4,
+  background: "transparent",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+};
+
+/**
+ * Kopfzeile des Explorers: die Werkzeuge, die ohne Auswahl immer greifen, plus
+ * die Auswahl-werkzeuge, die nur mit mindestens einem ausgewaehlten Knoten
+ * sichtbar sind.
+ *
+ * New folder arbeitet auf dem aktuell angezeigten Ordner (`currentPath`) — das
+ * ist der, den auch der Breadcrumb zeigt und in den der Upload landet. Die
+ * Auswahl-werkzeuge arbeiten dagegen auf der Auswahl, weil sie ein Objekt
+ * brauchen, dessen Elternordner sie als Startpunkt anbieten.
+ */
+function ExplorerToolbar({
+  selection,
+  uploadBusy,
+  onNewFolder,
+  onRefresh,
+  onUpload,
+  onCopyTo,
+  onMoveTo,
+  onClearSelection,
+  onProperties,
+  t,
+}: ExplorerToolbarProps) {
+  // `true` heisst: das Namensfeld ist offen. Der Text selbst liegt im
+  // uncontrolled Input, nicht im State — das Formular wird genau einmal
+  // abgeschickt und geschlossen, ein Render je Tastendruck waere Arbeit ohne
+  // Gegenwert. Zusaetzlich loest es den Blur-Fall: bei einem kontrollierten
+  // Feld raeumt `onBlur` den Entwurf, bevor der Submit-Handler ihn liest.
+  const [draftOpen, setDraftOpen] = useState(false);
+  const draftInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (draftOpen) draftInputRef.current?.focus();
+  }, [draftOpen]);
+
+  return (
+    <div
+      role="toolbar"
+      aria-label={t("files.toolbarLabel")}
+      title={t("files.selectionHint")}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        padding: "0 4px 4px 8px",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      {!draftOpen ? (
+        <button
+          type="button"
+          className="omp-press"
+          title={t("files.toolbarNewFolder")}
+          aria-label={t("files.toolbarNewFolder")}
+          style={TOOLBAR_BUTTON_STYLE}
+          onClick={() => setDraftOpen(true)}
+          onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+          onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+            <line x1="12" y1="11" x2="12" y2="16" />
+            <line x1="9.5" y1="13.5" x2="14.5" y2="13.5" />
+          </svg>
+        </button>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const name = (draftInputRef.current?.value ?? "").trim();
+            setDraftOpen(false);
+            if (name.length > 0) onNewFolder(name);
+          }}
+          style={{ display: "flex", alignItems: "center", gap: 3 }}
+        >
+          <input
+            ref={draftInputRef}
+            aria-label={t("files.newFolderName")}
+            placeholder={t("files.newFolderName")}
+            onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setDraftOpen(false); } }}
+            onBlur={() => setDraftOpen(false)}
+            style={{
+              width: 120,
+              height: 22,
+              padding: "0 5px",
+              boxSizing: "border-box",
+              background: "var(--bg)",
+              border: "1px solid var(--accent)",
+              borderRadius: 4,
+              color: "var(--text)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              outline: "none",
+            }}
+          />
+        </form>
+      )}
+
+      <button
+        type="button"
+        className="omp-press"
+        title={t("files.toolbarRefresh")}
+        aria-label={t("files.toolbarRefresh")}
+        style={TOOLBAR_BUTTON_STYLE}
+        onClick={onRefresh}
+        onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-5.7-8.4" />
+          <polyline points="21 3 21 9 15 9" />
+        </svg>
+      </button>
+
+      <button
+        type="button"
+        className="omp-press"
+        title={t("files.toolbarUpload")}
+        aria-label={t("files.toolbarUpload")}
+        disabled={uploadBusy}
+        style={{ ...TOOLBAR_BUTTON_STYLE, color: uploadBusy ? "var(--text-dim)" : "var(--text-muted)", cursor: uploadBusy ? "default" : "pointer" }}
+        onClick={onUpload}
+        onMouseEnter={(event) => { if (!uploadBusy) event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 16V4" />
+          <path d="m7 9 5-5 5 5" />
+          <path d="M5 20h14" />
+        </svg>
+      </button>
+
+      {selection.length > 0 && (
+        <>
+          <span aria-hidden="true" style={{ width: 1, height: 14, margin: "0 3px", background: "var(--border)", flexShrink: 0 }} />
+          <span style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {t("files.selectionCount", { count: selection.length })}
+          </span>
+
+          <button
+            type="button"
+            className="omp-press"
+            title={t("files.toolbarCopyTo")}
+            aria-label={t("files.toolbarCopyTo")}
+            style={TOOLBAR_BUTTON_STYLE}
+            onClick={onCopyTo}
+            onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+            onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="9" y="3" width="11" height="12" rx="2" />
+              <path d="M5 21V8a2 2 0 0 1 2-2h4" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            className="omp-press"
+            title={t("files.toolbarMoveTo")}
+            aria-label={t("files.toolbarMoveTo")}
+            style={TOOLBAR_BUTTON_STYLE}
+            onClick={onMoveTo}
+            onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+            onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 12h13" />
+              <polyline points="13 6 19 12 13 18" />
+            </svg>
+          </button>
+
+          {selection.length === 1 && (
+            <a
+              href={`/api/files/${encodeFilePathForApi(selection[0].path)}?type=download`}
+              download
+              title={t("files.toolbarDownload")}
+              aria-label={t("files.toolbarDownload")}
+              style={TOOLBAR_BUTTON_STYLE}
+              onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+              onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </a>
+          )}
+
+          <button
+            type="button"
+            className="omp-press"
+            title={t("files.toolbarProperties")}
+            aria-label={t("files.toolbarProperties")}
+            style={TOOLBAR_BUTTON_STYLE}
+            onClick={onProperties}
+            onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+            onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" />
+              <path d="M12 8h.01" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            className="omp-press"
+            title={t("files.clearSelection")}
+            aria-label={t("files.clearSelection")}
+            style={TOOLBAR_BUTTON_STYLE}
+            onClick={onClearSelection}
+            onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+            onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+              <path d="m6 6 12 12" />
+              <path d="m18 6-12 12" />
+            </svg>
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TreeNode({
   node,
   depth,
@@ -225,6 +650,8 @@ function TreeNode({
   highlightedPaths,
   gitStatusByPath,
   changedDirectoryPaths,
+  selectedPaths,
+  onToggleSelected,
   t,
 }: {
   node: FileNode;
@@ -240,10 +667,13 @@ function TreeNode({
   highlightedPaths: Set<string>;
   gitStatusByPath: Map<string, GitFileStatus>;
   changedDirectoryPaths: Set<string>;
+  selectedPaths: Set<string>;
+  onToggleSelected: (entry: SelectionEntry) => void;
   t: Translate;
 }) {
   const open = expandedPaths.has(node.fullPath);
   const highlighted = highlightedPaths.has(node.fullPath);
+  const selected = selectedPaths.has(node.fullPath);
   const normalizedPath = normalizeFilePathSlashes(node.fullPath);
   const gitStatus = gitStatusByPath.get(normalizedPath);
   const containsGitChanges = node.isDir && (
@@ -276,7 +706,17 @@ function TreeNode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
 
-  const handleClick = useCallback(() => {
+  const handleClick = useCallback((event: React.MouseEvent) => {
+    // Auswahl laeuft ueber Strg/Cmd-Klick, nicht ueber den einfachen Klick.
+    // Ein Dateimanager lebt davon, dass ein Klick eine Datei oeffnet; nimmt man
+    // das fuer die Auswahl, muss jeder Nutzer zweimal klicken, um etwas zu
+    // sehen. Der Modifikator kostet nur einen Finger und ist zugleich die
+    // gewohnte Mehrfachauswahl ohne weitere Klickpflege — ein Checkbox je
+    // Zeile wuerde bei tiefen Baeumen die Namensspalte verschieben.
+    if (event.ctrlKey || event.metaKey) {
+      onToggleSelected({ path: node.fullPath, name: node.name, isDir: node.isDir });
+      return;
+    }
     if (node.isDir) {
       // Click on a directory navigates into it (replaces the explorer root
       // view). The chevron handles expand/collapse instead, so this matches
@@ -285,7 +725,7 @@ function TreeNode({
     } else {
       onOpenFile(node.fullPath, node.name);
     }
-  }, [node.isDir, node.fullPath, node.name, onOpenFile, onNavigate]);
+  }, [node.fullPath, node.isDir, node.name, onNavigate, onOpenFile, onToggleSelected]);
 
   const handleChevronClick = useCallback((event: React.MouseEvent) => {
     event.stopPropagation();
@@ -307,6 +747,7 @@ function TreeNode({
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        data-selected={selected ? "true" : undefined}
         style={{
           position: "relative",
           display: "flex",
@@ -316,7 +757,9 @@ function TreeNode({
           paddingRight: 8,
           height: 24,
           cursor: "pointer",
-          background: hovered ? "var(--bg-hover)" : "transparent",
+          // Auswahl schlaegt Hover: eine markierte Zeile soll auch dann
+          // markiert bleiben, wenn der Zeiger sie gerade nicht beruehrt.
+          background: selected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
           borderRadius: 4,
           userSelect: "none",
         }}
@@ -474,6 +917,8 @@ function TreeNode({
               highlightedPaths={highlightedPaths}
               gitStatusByPath={gitStatusByPath}
               changedDirectoryPaths={changedDirectoryPaths}
+              selectedPaths={selectedPaths}
+              onToggleSelected={onToggleSelected}
               t={t}
             />
           ))}
@@ -714,6 +1159,16 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [pendingConflict, setPendingConflict] = useState<PendingConflict | null>(null);
   // Rechtsklick-Ziel in Viewport-Koordinaten. `null` heisst: Menue geschlossen.
   const [menuTarget, setMenuTarget] = useState<FileMenuTarget | null>(null);
+  // Auswahl fuer die Toolbar. Als Map nach Pfad, weil das Umschalten einer
+  // Zeile ein Lookup und eine Ersetzung ist und die Reihenfolge der Auswahl
+  // fuer die Werkzeuge keine Rolle spielt.
+  const [selection, setSelection] = useState<Map<string, SelectionEntry>>(new Map());
+  // Zielordner-Dialog der Toolbar. Bewusst getrennt vom Kontextmenue-Dialog:
+  // beide nutzen denselben Dialog, aber unterschiedliche Quellen und
+  // unterschiedliche Urspruenge, und ein gemeinsamer State wuerde beim
+  // Schliessen des einen den anderen ungefragt mitreissen.
+  const [toolbarTransfer, setToolbarTransfer] = useState<"copy" | "move" | null>(null);
+  const [propertiesTarget, setPropertiesTarget] = useState<SelectionEntry | null>(null);
   const [actionNotice, setActionNotice] = useState<FileActionNotice | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevCwdRef = useRef<string | null>(null);
@@ -724,6 +1179,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const gitStatusByPath = useMemo(() => new Map(
     gitFiles.map((status) => [normalizeFilePathSlashes(status.filePath), status]),
   ), [gitFiles]);
+
+  // Als Set, weil der Baum damit pro Zeile nur einen Lookup macht. Aus der
+  // Auswahl-Map abgeleitet, damit beide Zustandsformen nicht auseinanderlaufen.
+  const selectedPaths = useMemo(() => new Set(selection.keys()), [selection]);
 
   const changedDirectoryPaths = useMemo(() => {
     const directories = new Set<string>();
@@ -788,6 +1247,18 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setMenuTarget(null);
   }, []);
 
+  const handleToggleSelected = useCallback((entry: SelectionEntry) => {
+    setSelection((previous) => {
+      const next = new Map(previous);
+      if (next.has(entry.path)) next.delete(entry.path); else next.set(entry.path, entry);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelection(new Map());
+  }, []);
+
   const handleMutated = useCallback(() => {
     setTreeRefreshKey((key) => key + 1);
   }, []);
@@ -807,6 +1278,82 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   }, []);
 
   useEffect(() => () => clearTimeout(noticeTimerRef.current ?? undefined), []);
+
+  /**
+   * Neuer Ordner im aktuell angezeigten Verzeichnis. Dieselbe Route wie das
+   * Kontextmenue (`POST ?type=mkdir`, Pfad = Elternordner, `name` = Segment),
+   * damit beide Wege dieselbe Validierung durchlaufen. Die Namenspruefung
+   * steht hier, weil die Toolbar keinen Formularschritt hat, in dem sie
+   * sichtbar waere.
+   */
+  const handleNewFolder = useCallback((name: string) => {
+    if (name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+      handleActionNotice({ kind: "error", text: t("files.invalidName") });
+      return;
+    }
+    void fetch(`/api/file-actions/${encodeFilePathForApi(currentPath)}?type=mkdir`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({})) as { error?: string; reason?: string };
+        if (!res.ok) {
+          const message = data.error ?? data.reason ?? `HTTP ${res.status}`;
+          handleActionNotice({ kind: "error", text: data.error && data.reason && data.reason !== data.error ? `${message} (${data.reason})` : message });
+          return;
+        }
+        setTreeRefreshKey((key) => key + 1);
+        handleActionNotice({ kind: "success", text: t("files.folderCreated", { name }) });
+      })
+      .catch((cause: unknown) => {
+        handleActionNotice({ kind: "error", text: cause instanceof Error ? cause.message : String(cause) });
+      });
+  }, [currentPath, handleActionNotice, t]);
+
+  /**
+   * Copy/Move aus der Toolbar. Die API kennt pro Anfrage genau eine Quelle,
+   * deshalb laeuft bei mehreren markierten Eintraegen eine Kette: der Dialog
+   * bleibt fuer alle offen und schliesst erst, wenn der letzte durch ist.
+   */
+  const handleToolbarTransferConfirm = useCallback((destination: string) => {
+    const pending = [...selection.values()];
+    if (pending.length === 0) { setToolbarTransfer(null); return; }
+    const kind = toolbarTransfer ?? "copy";
+    void (async () => {
+      for (const entry of pending) {
+        let result: { ok: boolean; text: string };
+        try {
+          const res = await fetch(`/api/file-actions/${encodeFilePathForApi(entry.path)}?type=${kind}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ destination }),
+          });
+          const data = await res.json().catch(() => ({})) as { error?: string; reason?: string };
+          if (!res.ok) {
+            const message = data.error ?? data.reason ?? `HTTP ${res.status}`;
+            result = { ok: false, text: data.error && data.reason && data.reason !== data.error ? `${message} (${data.reason})` : message };
+          } else {
+            result = {
+              ok: true,
+              text: kind === "move" ? t("files.movedTo", { destination }) : t("files.copiedTo", { destination }),
+            };
+          }
+        } catch (cause) {
+          result = { ok: false, text: cause instanceof Error ? cause.message : String(cause) };
+        }
+        if (!result.ok) {
+          setToolbarTransfer(null);
+          handleActionNotice({ kind: "error", text: result.text });
+          return;
+        }
+        handleActionNotice({ kind: "success", text: result.text });
+      }
+      setToolbarTransfer(null);
+      setSelection(new Map());
+      setTreeRefreshKey((key) => key + 1);
+    })();
+  }, [handleActionNotice, selection, t, toolbarTransfer]);
 
   const applyUploadResult = useCallback((data: UploadResponse) => {
     const uploaded = data.uploaded ?? [];
@@ -1147,6 +1694,21 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>
           ) : (
             <>
+              <ExplorerToolbar
+                selection={[...selection.values()]}
+                uploadBusy={uploadBusy}
+                onNewFolder={handleNewFolder}
+                onRefresh={() => setTreeRefreshKey((key) => key + 1)}
+                onUpload={() => { if (!uploadBusy) uploadInputRef.current?.click(); }}
+                onCopyTo={() => setToolbarTransfer("copy")}
+                onMoveTo={() => setToolbarTransfer("move")}
+                onClearSelection={clearSelection}
+                onProperties={() => {
+                  const [first] = [...selection.values()];
+                  if (first) setPropertiesTarget(first);
+                }}
+                t={t}
+              />
               <Breadcrumb
                 currentPath={currentPath}
                 projectRoot={cwd}
@@ -1171,6 +1733,8 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                   highlightedPaths={highlightedPaths}
                   gitStatusByPath={gitStatusByPath}
                   changedDirectoryPaths={changedDirectoryPaths}
+                  selectedPaths={selectedPaths}
+                  onToggleSelected={handleToggleSelected}
                   t={t}
                 />
               ))}
@@ -1191,6 +1755,23 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           onMutated={handleMutated}
           onNotify={handleActionNotice}
         />
+      )}
+      {toolbarTransfer && selection.size > 0 && (
+        // Startpunkt ist der Elternordner des ersten markierten Eintrags: das
+        // ist der Ordner, aus dem heraus man am ehesten ein anderes Ziel waehlt.
+        <FileBrowserDialog
+          open
+          title={toolbarTransfer === "move"
+            ? t("files.moveDialogTitle", { name: [...selection.values()][0].name })
+            : t("files.copyDialogTitle", { name: [...selection.values()][0].name })}
+          initialPath={getFileDirectory([...selection.values()][0].path) || "/"}
+          confirmLabel={toolbarTransfer === "move" ? t("files.moveHere") : t("files.copyHere")}
+          onCancel={() => setToolbarTransfer(null)}
+          onConfirm={handleToolbarTransferConfirm}
+        />
+      )}
+      {propertiesTarget && (
+        <PropertiesDialog target={propertiesTarget} onClose={() => setPropertiesTarget(null)} t={t} />
       )}
       {actionNotice && (
         <FileActionToast notice={actionNotice} onDismiss={() => setActionNotice(null)} />

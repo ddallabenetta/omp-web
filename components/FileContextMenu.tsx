@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { encodeFilePathForApi } from "@/lib/file-paths";
+import { encodeFilePathForApi, getFileDirectory } from "@/lib/file-paths";
 import { copyText } from "@/lib/clipboard";
+import { FileBrowserDialog } from "./FileBrowserDialog";
 import { useI18n } from "@/hooks/useI18n";
 
 /** Rechtsklick-Ziel einer Baumzeile, x/y in Viewport-Koordinaten. */
@@ -205,6 +206,11 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
   const { t } = useI18n();
   const [phase, setPhase] = useState<MenuPhase>("root");
   const [draft, setDraft] = useState("");
+  // Zielauswahl fuer Copy/Move. Sie lebt im Menue und nicht im aufrufenden
+  // Explorer: das Menue ist der einzige Ort, der Quelle (`target.path`) und
+  // Absicht (`kind`) kennt, und der Dialog laeuft ohnehin ueber dem Panel
+  // (Backdrop z-index 1100 gegen Menue 320), sodass kein Portal noetig ist.
+  const [transfer, setTransfer] = useState<{ kind: TransferKind; busy: boolean } | null>(null);
   const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<HTMLInputElement>(null);
@@ -239,6 +245,10 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
   }, [phase]);
 
   useEffect(() => {
+    // Solange der Ziel-Dialog offen ist, gehoeren Escape, Klick-daneben und
+    // Scroll dem Dialog: seine eigene Backdrop- und Escape-Behandlung gilt.
+    // Sonst wuerde das Schliessen des Menuepfads den Dialog mitschliessen.
+    if (transfer) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!panelRef.current?.contains(event.target as Node)) onClose();
     };
@@ -259,7 +269,7 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
       window.removeEventListener("scroll", onViewportChange, true);
       window.removeEventListener("resize", onViewportChange);
     };
-  }, [onClose]);
+  }, [onClose, transfer]);
 
   const moveFocus = useCallback((delta: number) => {
     const items = panelRef.current?.querySelectorAll<HTMLElement>("[role='menuitem']:not([disabled])");
@@ -325,27 +335,32 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
     );
   }, [onClose, onNotify, phase, run, t, target.path]);
 
-  const handleTransfer = useCallback((kind: TransferKind) => {
-    const source = target.path;
-    // Phase 3 ersetzt den nativen Prompt durch eine Auswahl im Explorer.
-    const answer = window.prompt(
-      kind === "copy" ? t("files.promptCopyTo", { name: target.name }) : t("files.promptMoveTo", { name: target.name }),
-      "",
-    );
-    onClose();
-    if (answer === null) return;
-    const destination = answer.trim();
-    if (destination.length === 0) return;
-    // Copy und Move verlangen ein absolutes Zielverzeichnis.
-    if (!(destination.startsWith("/") || destination.startsWith("\\\\") || /^[a-zA-Z]:[\\/]/.test(destination))) {
-      onNotify({ kind: "error", text: t("files.invalidDestination") });
-      return;
-    }
-    run(
-      () => postFileAction(source, kind, { destination }),
-      kind === "copy" ? t("files.copiedTo", { destination }) : t("files.movedTo", { destination }),
-    );
-  }, [onClose, onNotify, run, t, target.name, target.path]);
+  const handleTransferStart = useCallback((kind: TransferKind) => {
+    // Das Menue bleibt offen und legt nur den Dialog darueber — sonst riss der
+    // naechste `pointerdown` auf dem Dialog das Menue mitsamt dem Dialog weg.
+    setPhase("root");
+    setTransfer({ kind, busy: false });
+  }, []);
+
+  const handleTransferConfirm = useCallback((destination: string) => {
+    setTransfer((current) => current && { ...current, busy: true });
+    void postFileAction(target.path, transfer?.kind ?? "copy", { destination })
+      .then((result) => {
+        setTransfer(null);
+        onClose();
+        if (result.ok) {
+          onMutated();
+          onNotify({
+            kind: "success",
+            text: transfer?.kind === "move"
+              ? t("files.movedTo", { destination })
+              : t("files.copiedTo", { destination }),
+          });
+          return;
+        }
+        onNotify({ kind: "error", text: result.error });
+      });
+  }, [onClose, onMutated, onNotify, t, target.path, transfer?.kind]);
 
   const handleDelete = useCallback(() => {
     run(
@@ -399,10 +414,10 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
     if (action === "copy-path") { handleCopyPath(); return; }
     if (action === "new-folder") { setDraft(""); setPhase("new-folder"); return; }
     if (action === "rename") { setDraft(target.name); setPhase("rename"); return; }
-    if (action === "copy-to") { handleTransfer("copy"); return; }
-    if (action === "move-to") { handleTransfer("move"); return; }
+    if (action === "copy-to") { handleTransferStart("copy"); return; }
+    if (action === "move-to") { handleTransferStart("move"); return; }
     setPhase("confirm-delete");
-  }, [handleCopyPath, handleTransfer, target.name]);
+  }, [handleCopyPath, handleTransferStart, target.name]);
 
   const panelLabel = phase === "rename"
     ? t("files.contextRename")
@@ -413,7 +428,8 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
         : t("files.contextLabel", { name: target.name });
 
   return (
-    <div
+    <>
+      <div
       ref={panelRef}
       tabIndex={-1}
       role={phase === "root" ? "menu" : "dialog"}
@@ -506,7 +522,25 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
           </div>
         </div>
       )}
-    </div>
+      </div>
+
+      {transfer && (
+        // Der Dialog ist ein Geschwister des Panels, nicht ein Kind: nur so
+        // liegt sein Backdrop (z-index 1100) ueber dem Menue (320) und nicht
+        // in dessen Innenleben, das auf Zeilenhoehe und Tastaturfluss traint.
+        <FileBrowserDialog
+          open
+          title={transfer.kind === "move"
+            ? t("files.moveDialogTitle", { name: target.name })
+            : t("files.copyDialogTitle", { name: target.name })}
+          initialPath={getFileDirectory(target.path) || "/"}
+          confirmLabel={transfer.kind === "move" ? t("files.moveHere") : t("files.copyHere")}
+          busy={transfer.busy}
+          onCancel={() => setTransfer(null)}
+          onConfirm={handleTransferConfirm}
+        />
+      )}
+    </>
   );
 }
 
