@@ -86,6 +86,22 @@ export async function getWritableRoots(identity: WebIdentity | null): Promise<Se
     // are the always-on entries we refuse to inherit. A project that happens to
     // sit at a drive root is still reachable through its own path, so nothing
     // real is lost.
+    //
+    // This one line is the entire write boundary for an admin, and it is
+    // verified by mutation rather than by inspection: delete it, and
+    // `isWritePathAllowed("/etc/hostname", …)` flips from false to true — as do
+    // `/etc/passwd` and `/root/.ssh/authorized_keys`, which is to say a
+    // compromised admin password becomes arbitrary write, including SSH keys
+    // of the account the service runs as.
+    //
+    // It is worth stating why a test that only watches the refusals would not
+    // notice. `/etc/hostname` is refused for two independent reasons: the
+    // filesystem root is filtered out here, *and* the file sits in no project.
+    // A test asserting the 403 passes either way, so it proves nothing about
+    // this line. `lib/write-access.identity.test.mjs` therefore asserts the
+    // filtered *set* — that no write root is a bare filesystem root — which is
+    // the property that actually does the work. Removing the line fails five
+    // tests, not one.
     if (resolved === path.parse(resolved).root) continue;
     roots.add(resolved);
   }
