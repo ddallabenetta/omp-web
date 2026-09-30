@@ -57,6 +57,22 @@
    * einer festen Pixelzahl, die auf einem Telefon den Rand wegisst. */
   padding: 5vh 5vw;
   background: rgba(0, 0, 0, 0.6);
+  /* Weichzeichnet die Anwendung unter dem Fenster, statt sie nur dunkel zu
+   * ueberdecken. Zweierlei Nutzen, und der zweite ist der eigentliche:
+   * 1. Das Fenster hebt sich als eigene Ebene ab, statt auf der Anwendung
+   *    zu kleben.
+   * 2. Die Bedienelemente darunter — vor allem die Resizer-Linie der
+   *    Sidebar — werden zu einem unauffindbaren Schemen und hoeren auf,
+   *    die Aufmerksamkeit auf sich zu ziehen. Sie bleiben sichtbar, weil
+   *    sie nicht weggedunkelt werden, nur unschaerf; wer die Linie
+   *    gezogener haben will, erkennt sie nicht mehr als Griff.
+   *
+   * 8px und dieselbe Deckkraft wie der Hintergrund entsprechen dem Muster
+   * aus `SettingsConfig.module.css:9`. Der Backdrop hier ist mit 0.6
+   * deutlich dunkler als der der Einstellungen (0.48), weil der Explorer
+   * als Dauer-Arbeitsflaeche gedacht ist und die Datei im Vordergrund nicht
+   * so stark leuchten soll, wie sie es in einem Einstellungsdialog tut. */
+  backdrop-filter: blur(8px);
 }
 
 .panel {
