@@ -39,9 +39,9 @@ Two consequences worth remembering:
 ```
 Browser                Next.js Server (Bun)        AgentSession (in-process)
   │                        │                               │
-  ├─ GET /api/sessions ────▶ reads ~/.omp/agent/sessions/  │
-  ├─ GET /api/sessions/[id] reads .jsonl file directly     │
-  ├─ GET /api/agent/running ───────▶ running id snapshot   │
+  ├─ GET /api/sessions ────▶ reads ~/.omp/agent/sessions/  │  ← filtered by owner, see below
+  ├─ GET /api/sessions/[id] reads .jsonl file directly     │  ← filtered by owner, see below
+  ├─ GET /api/agent/running ───────▶ running id snapshot   │  ← filtered by owner, see below
   │                        │                               │
   ├─ send message ─────────▶ POST /api/agent/[id]          │
   │                        │   startRpcSession() ─────────▶│ createAgentSession()
@@ -268,6 +268,7 @@ Newer omp emits `compaction_start` / `compaction_end`; older versions emitted `a
 - `models.yml` and `config.yml` are per account under that account's agent directory. Skills stay globally readable as shared tooling, and writing them — global installs and updates included — is admin-only. Nothing is migrated: a new account starts empty on purpose, because copying the operator's `models.yml` would hand his API key to the first tenant.
 - `/api/cwd/validate`, `/api/default-cwd`, and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable — but only for an admin. For any other account the candidate is checked against the account's own home with `isPathInUserHome()` and nothing is granted, because the allowlist lives in one process serving every operator: a grant made by one user would widen the filesystem for all of them, permanently.
 - `allowFileRoot()` buckets grants per identity. A call without an identity lands in the unattributed bucket, which only admins can see.
+- `/api/sessions` and `/api/terminal` filter by owner, and so do the `agent/running` snapshot and its event stream — the ids those two publish are what the rest of the API addresses things by, so leaving them unfiltered leaks through an open SSE channel. A foreign session or shell answers **404, not 403**: a 403 would confirm that the id exists, and the point of the filter is that another account's work is not merely unreadable but undiscoverable. Session ownership comes from the `cwd` in the session file, which means the sessions live in one shared tree owned by the account the service runs as — see the containment note below.
 - None of these are containment. Every one is an assignment decided from data the service process can write, so they stop an account from seeing another's work by accident and through the routes that exist, not against someone who edits the underlying files. `docs/authentication.md` says so in the place a reader of this file is pointed at.
 
 ### Plugins and skills
