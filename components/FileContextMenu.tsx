@@ -57,6 +57,14 @@ interface FileContextMenuProps {
 
 /** Rand zwischen Panel und Viewportkante. */
 const MENU_MARGIN = 8;
+/**
+ * Das Menue muss ueber allem liegen, auch ueber den Backdrops der grossen
+ * Overlays. Der Explorer-Ordnerdialog sitzt bei 1100, die Bildvorschau bei 1200
+ * und das grosse Explorer-Fenster bei 1300; ein Menue, das im Fenster oder in
+ * der Bildvorschau aufgeht, faellt mit den frueheren 320 vollstaendig weg. Der
+ * Wert liegt darueber, damit es in jeder Einbettung sichtbar bleibt.
+ */
+const MENU_Z_INDEX = 1400;
 const MENU_MIN_WIDTH = 172;
 const MENU_MAX_WIDTH = 240;
 const PANEL_CONTENT_WIDTH = 208;
@@ -466,7 +474,7 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenIm
         position: "fixed",
         left: placement?.left ?? target.x,
         top: placement?.top ?? target.y,
-        zIndex: 320,
+        zIndex: MENU_Z_INDEX,
         minWidth: MENU_MIN_WIDTH,
         maxWidth: `min(${MENU_MAX_WIDTH}px, calc(100vw - ${MENU_MARGIN * 2}px))`,
         display: "flex",
