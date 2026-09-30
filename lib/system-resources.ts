@@ -1,5 +1,6 @@
 import os from "os";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
+import { spawnSync } from "child_process";
 
 /**
  * Physical memory the process is actually allowed to use, in bytes.
@@ -160,4 +161,209 @@ export function readAvailableCores(): { cores: number; source: string } {
   }
 
   return { cores: fromOs, source: "os.cpus().length" };
+}
+
+/**
+ * Read a sysfs counter that holds a bare number, e.g. "37\n".
+ * Returns null for anything unparseable rather than guessing at 0.
+ */
+export function parseSysfsPercent(raw: string): number | null {
+  const text = raw.trim();
+  // Number("") is 0, so an empty file would read as "0 % busy" instead of
+  // "no reading". An absent counter is not an idle GPU.
+  if (text.length === 0) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return Math.min(100, value);
+}
+
+/**
+ * Parse `nvidia-smi --format=csv,noheader,nounits` output:
+ * `37, 812, 8159` → utilisation %, memory used, memory total (MiB).
+ * Tolerates the leading spaces NVIDIA puts after each comma and a trailing
+ * `[Not Supported]` cell on cards where the field is unavailable.
+ */
+export function parseNvidiaSmiCsv(raw: string): { utilizationPercent: number; memoryUsedBytes: number; memoryTotalBytes: number } | null {
+  const line = raw.trim().split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+  if (!line) return null;
+  const [util, used, total] = line.split(",").map((cell) => cell.trim());
+  const utilizationPercent = Number(util);
+  const usedMib = Number(used);
+  const totalMib = Number(total);
+  if (!Number.isFinite(utilizationPercent) || !Number.isFinite(usedMib) || !Number.isFinite(totalMib)) return null;
+  return {
+    utilizationPercent: Math.max(0, Math.min(100, utilizationPercent)),
+    memoryUsedBytes: Math.max(0, Math.round(usedMib * 1024 * 1024)),
+    memoryTotalBytes: Math.max(0, Math.round(totalMib * 1024 * 1024)),
+  };
+}
+
+/**
+ * Read a sysfs counter that holds a raw byte count, e.g. "8589934592\n".
+ *
+ * Separate from parseSysfsPercent because these files are already in bytes and
+ * routinely exceed 100 — running them through a percentage parser would clamp a
+ * 16 GB card to 100 and then multiply it by a mebibyte.
+ */
+export function parseSysfsBytes(raw: string): number | null {
+  const text = raw.trim();
+  if (text.length === 0) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return Math.round(value);
+}
+
+/**
+ * Which GPU vendor this machine has, decided without shelling out.
+ *
+ * The check is file-based on purpose. `lspci` is absent on many minimal images
+ * (it is not installed on the deploy target), and shelling out to find out
+ * would cost a process spawn on every request for a fact the filesystem already
+ * answers.
+ */
+export type GpuVendor = "nvidia" | "amd" | "intel" | "none";
+
+export function detectGpuVendor(
+  exists: (path: string) => boolean,
+  listDrmCards: () => string[],
+): GpuVendor {
+  // A discrete NVIDIA card is the most useful thing to report, and the most
+  // expensive to query, so it is decided first: if one is present it outranks
+  // whatever iGPU the CPU happens to also carry.
+  if (exists("/dev/nvidiactl") || exists("/dev/nvidia0")) return "nvidia";
+  if (exists("/dev/kfd")) return "amd";
+  if (listDrmCards().length > 0) return "intel";
+  return "none";
+}
+
+/**
+ * DRM card directories, e.g. ["card0", "card1"].
+ * Connector entries like "card0-DP-1" and the "version" file are not cards.
+ */
+export function listDrmCards(readDir: (path: string) => string[]): string[] {
+  let entries: string[];
+  try {
+    entries = readDir("/sys/class/drm");
+  } catch {
+    return [];
+  }
+  return entries.filter((entry) => /^card\d+$/.test(entry));
+}
+
+/** Hard ceiling on any external command the GPU probe runs. */
+const GPU_COMMAND_TIMEOUT_MS = 1500;
+
+/**
+ * Current load of the GPU, or null when this machine has none to report.
+ *
+ * Three sources, cheapest first, because the deploy target has no GPU at all
+ * and the badge polls every few seconds:
+ *
+ * - AMD (amdgpu) exposes load directly in sysfs. `gpu_busy_percent` and
+ *   `mem_busy_percent` are amdgpu attributes; i915 does not provide them, which
+ *   is why an Intel-only machine returns null here rather than a guess.
+ * - NVIDIA has no sysfs equivalent, so it is the one source that must spawn a
+ *   process. It is guarded by a device-node check first, so the spawn is only
+ *   ever reached on a machine that really has an NVIDIA card.
+ * - Intel exposes no percentage through sysfs at all. The i915 PMU can count
+ *   engine-busy time, but only as a delta between two samples, which this
+ *   stateless function cannot produce honestly — reporting a cumulative counter
+ *   as a percentage would be a fabricated number. So Intel reports what is
+ *   true: a device is present, with no utilisation figure.
+ *
+ * The card index is discovered rather than assumed. It is not stable across
+ * boots: the deploy target exposes its iGPU as card1 with no card0 at all.
+ */
+export function readGpuStats(deps: GpuProbeDeps = realGpuProbeDeps): GpuStats {
+  const { exists, readDir, readFile, run } = deps;
+  const vendor = detectGpuVendor(exists, () => listDrmCards(readDir));
+  if (vendor === "none") return { present: false, vendor: null, utilizationPercent: null, memoryUsedBytes: null, memoryTotalBytes: null, source: null };
+
+  if (vendor === "nvidia") {
+    // Only reached when a device node exists, so the missing-binary case is the
+    // exception rather than the norm. timeout is a hard wall: spawnSync kills
+    // the child and returns with error ETIMEDOUT instead of hanging the route.
+    const result = run("nvidia-smi", [
+      "--query-gpu=utilization.gpu,memory.used,memory.total",
+      "--format=csv,noheader,nounits",
+    ]);
+    const parsed = result.status === 0 ? parseNvidiaSmiCsv(result.stdout) : null;
+    if (parsed) {
+      return {
+        present: true,
+        vendor: "nvidia",
+        utilizationPercent: parsed.utilizationPercent,
+        memoryUsedBytes: parsed.memoryUsedBytes,
+        memoryTotalBytes: parsed.memoryTotalBytes,
+        source: "nvidia-smi",
+      };
+    }
+    // A device node without a usable query: the card is there, the number is
+    // not. Saying so beats reporting a fabricated zero.
+    return { present: true, vendor: "nvidia", utilizationPercent: null, memoryUsedBytes: null, memoryTotalBytes: null, source: null };
+  }
+
+  if (vendor === "amd") {
+    for (const card of listDrmCards(readDir)) {
+      const base = `/sys/class/drm/${card}/device`;
+      // exists() before read(): a missing file is an ordinary outcome here, and
+      // probing costs a syscall while reading throws.
+      if (!exists(`${base}/gpu_busy_percent`)) continue;
+      const utilizationPercent = parseSysfsPercent(readFile(`${base}/gpu_busy_percent`));
+      if (utilizationPercent === null) continue;
+      // mem_info_vram_* are byte counts per the amdgpu driver docs, not MiB.
+      const used = exists(`${base}/mem_info_vram_used`) ? parseSysfsBytes(readFile(`${base}/mem_info_vram_used`)) : null;
+      const total = exists(`${base}/mem_info_vram_total`) ? parseSysfsBytes(readFile(`${base}/mem_info_vram_total`)) : null;
+      return {
+        present: true,
+        vendor: "amd",
+        utilizationPercent,
+        memoryUsedBytes: used,
+        memoryTotalBytes: total,
+        source: `${base}/gpu_busy_percent`,
+      };
+    }
+  }
+
+  return { present: true, vendor: "intel", utilizationPercent: null, memoryUsedBytes: null, memoryTotalBytes: null, source: null };
+}
+
+/**
+ * The filesystem and process boundaries of the GPU probe, injectable so the
+ * whole decision tree can be exercised without the hardware it describes.
+ */
+export interface GpuProbeDeps {
+  exists: (path: string) => boolean;
+  readDir: (path: string) => string[];
+  readFile: (path: string) => string;
+  run: (command: string, args: string[]) => { status: number | null; stdout: string };
+}
+
+const realGpuProbeDeps: GpuProbeDeps = {
+  exists: existsSync,
+  readDir: (path) => readdirSync(path),
+  readFile: (path) => readFileSync(path, "utf8"),
+  run: (command, args) => {
+    const result = spawnSync(command, args, {
+      timeout: GPU_COMMAND_TIMEOUT_MS,
+      encoding: "utf8",
+      // stderr is discarded: driver chatter must never reach the server log.
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    return {
+      status: result.status,
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+    };
+  },
+};
+
+export interface GpuStats {
+  present: boolean;
+  /** `null` when no GPU was found at all, so the badge can say "none" instead of naming a vendor. */
+  vendor: GpuVendor | null;
+  utilizationPercent: number | null;
+  memoryUsedBytes: number | null;
+  memoryTotalBytes: number | null;
+  source: string | null;
 }

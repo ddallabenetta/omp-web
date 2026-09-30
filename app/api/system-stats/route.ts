@@ -3,6 +3,7 @@ import os from "os";
 import { performance } from "perf_hooks";
 import {
   readAvailableCores,
+  readGpuStats,
   readMemAvailableBytes,
   readTotalMemoryBytes,
 } from "@/lib/system-resources";
@@ -82,6 +83,10 @@ export async function GET() {
       // instead of looking like a bug.
       totalSource: totalMemSource,
     },
+    // Every field is null on a machine with no usable GPU rather than the whole
+    // block being omitted, so the badge can tell "no GPU here" apart from
+    // "the request failed" and render an em dash instead of disappearing.
+    gpu: readGpuStats(),
     process: {
       pid: process.pid,
       rssBytes: proc.rss,

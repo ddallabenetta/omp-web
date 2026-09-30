@@ -51,7 +51,13 @@ interface Props {
   refreshKey?: number;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
   onAtMentions?: (relativePaths: string[]) => void;
-  onUploadBusyChange?: (busy: boolean) => void;
+  /**
+   * Zusaetzlicher Refresh der Umgebung. Die eigene Toolbar laedt den Baum ohnehin
+   * neu; darueber hinaus braucht der Refresh-Button aber auch die Aussenwelt
+   * (Git-Stand im Datei-Tab) im Takt. Ohne den Callback bleibt es beim lokalen
+   * Nachladen.
+   */
+  onRefresh?: () => void;
   changesCollapsed: boolean;
   onChangesCountChange?: (count: number) => void;
 }
@@ -88,6 +94,26 @@ interface PendingConflict {
   conflicts: string[];
   nonReplaceable: string[];
 }
+
+/**
+ * Rechte Kanten der absoluten Hover-Knöpfe einer Baumzeile, in Pixeln.
+ *
+ * Die Knöpfe stehen nebeneinander am rechten Zeilenrand. Von rechts nach links:
+ * Download (4), grosse Vorschau (30), Mention (58 bei Dateien, 4 bei Ordnern).
+ * Die beiden Bildwerkzeuge sind 22 Pixel breit (20 plus je ein Pixel Rahmen),
+ * der Download-Anker 23 (5 Pixel Polster links und rechts um ein 11-Pixel-Zeichen
+ * plus Rahmen). Zwischen den 22-Pixel-Knoepfen bleiben damit 4 Pixel Luft, und
+ * die Kante des 23-Pixel-Ankers liegt genau an der linken Kante des
+ * Bildknopfes.
+ *
+ * Die Mention-Schaltflaeche traegt Text und ist je nach Sprache unterschiedlich
+ * breit; sie steht deshalb ganz links. Ihre Breite kann so wachsen, wie es die
+ * Uebersetzung verlangt, ohne einen Nachbarn zu ueberdecken.
+ */
+const ROW_ACTION_RIGHT_DOWNLOAD = 4;
+const ROW_ACTION_RIGHT_IMAGE = 30;
+const ROW_ACTION_RIGHT_MENTION_FILE = 58;
+const ROW_ACTION_RIGHT_MENTION_DIR = 4;
 
 async function fetchEntries(dirPath: string): Promise<FileNode[]> {
   const encoded = encodeFilePathForApi(dirPath);
@@ -201,6 +227,22 @@ function MentionIcon({ size = 11 }: { size?: number }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="4" />
       <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8" />
+    </svg>
+  );
+}
+
+/**
+ * Spreizendes Bild als Zeichen fuer die grosse Vorschau. Bewusst nicht das
+ * Dateityp-Symbol der Zeile: es steht zusammen mit Mention und Download auf
+ * der Zeile und muss als Werkzeug erkennbar sein, nicht als Inhalt.
+ */
+function ImageOpenIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="15 3 21 3 21 9" />
+      <polyline points="9 21 3 21 3 15" />
+      <line x1="21" y1="3" x2="14" y2="10" />
+      <line x1="3" y1="21" x2="10" y2="14" />
     </svg>
   );
 }
@@ -389,6 +431,8 @@ interface ExplorerToolbarProps {
   uploadBusy: boolean;
   onNewFolder: (name: string) => void;
   onRefresh: () => void;
+  /** `true` heisst: der Refresh ist gerade durch, der Haken bestaetigt das. */
+  refreshDone: boolean;
   onUpload: () => void;
   onCopyTo: () => void;
   onMoveTo: () => void;
@@ -427,6 +471,7 @@ function ExplorerToolbar({
   uploadBusy,
   onNewFolder,
   onRefresh,
+  refreshDone,
   onUpload,
   onCopyTo,
   onMoveTo,
@@ -514,15 +559,30 @@ function ExplorerToolbar({
         className="omp-press"
         title={t("files.toolbarRefresh")}
         aria-label={t("files.toolbarRefresh")}
-        style={TOOLBAR_BUTTON_STYLE}
+        style={{
+          ...TOOLBAR_BUTTON_STYLE,
+          color: refreshDone ? "#4ade80" : "var(--text-muted)",
+          background: refreshDone ? "rgba(74,222,128,0.18)" : "transparent",
+        }}
         onClick={onRefresh}
-        onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
-        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+        onMouseEnter={(event) => { if (!refreshDone) event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => {
+          event.currentTarget.style.background = refreshDone ? "rgba(74,222,128,0.18)" : "transparent";
+        }}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-5.7-8.4" />
-          <polyline points="21 3 21 9 15 9" />
-        </svg>
+        {/* Der Haken ist die Bestaetigung fuer den Refresh. Ohne ihn sieht der
+            Nutzer nicht, ob der Klick durch ist — der Baum tauscht sich im
+            Bestandsfall inhaltlich nicht. */}
+        {refreshDone ? (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        ) : (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-5.7-8.4" />
+            <polyline points="21 3 21 9 15 9" />
+          </svg>
+        )}
       </button>
 
       <button
@@ -693,6 +753,16 @@ function TreeNode({
   const [loading, setLoading] = useState(false);
   const [hovered, setHovered] = useState(false);
 
+  /**
+   * Der Knopf fuer die grosse Vorschau teilt sich den Weg mit dem Zeilen-Klick:
+   * beide rufen `onOpenImage` auf, und beide setzen dieselbe Bildvorschau des
+   * Explorers. Ohne den Callback (Aufrufer ohne eigene Vorschau) faellt der
+   * Knopf weg, und der Klick auf die Zeile geht wie zuvor an `onOpenFile`.
+   * Ordner sind nie Bilder, `isImagePath` entscheidet also nur noch ueber die
+   * Endung.
+   */
+  const canPreviewImage = onOpenImage !== undefined && !node.isDir && isImagePath(node.name);
+
   const loadChildren = useCallback(async (force = false) => {
     if (loaded && !force) return;
     setLoading(true);
@@ -852,7 +922,7 @@ function TreeNode({
             title={t("files.insertPath")}
             style={{
               position: "absolute",
-              right: !node.isDir ? 28 : 4,
+              right: !node.isDir ? ROW_ACTION_RIGHT_MENTION_FILE : ROW_ACTION_RIGHT_MENTION_DIR,
               top: "50%",
               transform: "translateY(-50%)",
               display: "flex",
@@ -875,6 +945,38 @@ function TreeNode({
             {t("files.mention")}
           </button>
         )}
+        {canPreviewImage && hovered && (
+          <button
+            className="omp-press-scale"
+            onClick={(e) => {
+              // Ohne Halt ruft der Klick auf den Knopf den Zeilen-Klick auf und
+              // oeffnet dieselbe Vorschau ein zweites Mal.
+              e.stopPropagation();
+              onOpenImage?.(node.fullPath, node.name);
+            }}
+            title={t("files.openImageLarge")}
+            aria-label={t("files.openImageLarge")}
+            style={{
+              position: "absolute",
+              right: ROW_ACTION_RIGHT_IMAGE,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              width: 20,
+              height: 20,
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              color: "var(--text-muted)",
+              cursor: "pointer",
+            }}
+          >
+            <ImageOpenIcon />
+          </button>
+        )}
         {hovered && !node.isDir && (
           <a
             href={`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
@@ -883,7 +985,7 @@ function TreeNode({
             title={t("files.download")}
             style={{
               position: "absolute",
-              right: 4,
+              right: ROW_ACTION_RIGHT_DOWNLOAD,
               top: "50%",
               transform: "translateY(-50%)",
               display: "flex",
@@ -930,6 +1032,7 @@ function TreeNode({
               changedDirectoryPaths={changedDirectoryPaths}
               selectedPaths={selectedPaths}
               onToggleSelected={onToggleSelected}
+              onOpenImage={onOpenImage}
               t={t}
             />
           ))}
@@ -1144,7 +1247,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   refreshKey,
   onAtMention,
   onAtMentions,
-  onUploadBusyChange,
+  onRefresh,
   changesCollapsed,
   onChangesCountChange,
 }, ref) {
@@ -1159,6 +1262,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   // external `cwd` prop is the project root and never changes from inside.
   const [currentPath, setCurrentPath] = useState<string>(cwd);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
+  // Bestaetigung fuer den Refresh-Button. Zwei Sekunden gruen, dann faellt der
+  // Haken wieder weg — ohne sie bliebe bei unveraendertem Baum kein Merkmal,
+  // an dem der Nutzer den Klick sieht.
+  const [refreshDone, setRefreshDone] = useState(false);
+  const refreshDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
   const [homeDir, setHomeDir] = useState<string>("/");
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
@@ -1466,11 +1574,21 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     },
   }), [uploadBusy]);
 
-  useEffect(() => {
-    onUploadBusyChange?.(uploadBusy);
-  }, [onUploadBusyChange, uploadBusy]);
+  // Laedt den Baum neu, meldet nach aussen (Git-Stand im Datei-Tab) und zeigt
+  // den Haken. Der Timer wird vorher geraeumt, damit ein zweiter Klick die
+  // Anzeige nicht vorzeitig zurueckstellt.
+  const handleRefresh = useCallback(() => {
+    setTreeRefreshKey((key) => key + 1);
+    onRefresh?.();
+    setRefreshDone(true);
+    clearTimeout(refreshDoneTimerRef.current ?? undefined);
+    refreshDoneTimerRef.current = setTimeout(() => {
+      refreshDoneTimerRef.current = null;
+      setRefreshDone(false);
+    }, 2000);
+  }, [onRefresh]);
 
-  useEffect(() => () => onUploadBusyChange?.(false), [onUploadBusyChange]);
+  useEffect(() => () => clearTimeout(refreshDoneTimerRef.current ?? undefined), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1704,6 +1822,29 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         </div>
       )}
 
+      {/* Die Werkzeuge stehen ueber der Aenderungsliste und dem Baum, nicht
+          darin: mit aufgeklappter Liste waeren Refresh und Upload sonst weg. */}
+      {!loading && !error && (
+        <div style={{ padding: "2px 4px 0" }}>
+          <ExplorerToolbar
+            selection={[...selection.values()]}
+            uploadBusy={uploadBusy}
+            onNewFolder={handleNewFolder}
+            onRefresh={handleRefresh}
+            refreshDone={refreshDone}
+            onUpload={() => { if (!uploadBusy) uploadInputRef.current?.click(); }}
+            onCopyTo={() => setToolbarTransfer("copy")}
+            onMoveTo={() => setToolbarTransfer("move")}
+            onClearSelection={clearSelection}
+            onProperties={() => {
+              const [first] = [...selection.values()];
+              if (first) setPropertiesTarget(first);
+            }}
+            t={t}
+          />
+        </div>
+      )}
+
       {(changesCollapsed || gitFiles.length === 0) && (
         <div style={{ padding: "2px 4px" }}>
           {loading ? (
@@ -1712,21 +1853,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>
           ) : (
             <>
-              <ExplorerToolbar
-                selection={[...selection.values()]}
-                uploadBusy={uploadBusy}
-                onNewFolder={handleNewFolder}
-                onRefresh={() => setTreeRefreshKey((key) => key + 1)}
-                onUpload={() => { if (!uploadBusy) uploadInputRef.current?.click(); }}
-                onCopyTo={() => setToolbarTransfer("copy")}
-                onMoveTo={() => setToolbarTransfer("move")}
-                onClearSelection={clearSelection}
-                onProperties={() => {
-                  const [first] = [...selection.values()];
-                  if (first) setPropertiesTarget(first);
-                }}
-                t={t}
-              />
               <Breadcrumb
                 currentPath={currentPath}
                 projectRoot={cwd}

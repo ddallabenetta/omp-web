@@ -8,6 +8,17 @@ interface Stats {
   cpuCoresSource?: string;
   loadAvg: { "1m": number; "5m": number; "15m": number };
   memory: { totalBytes: number; usedBytes: number; usedPercent: number; totalSource?: string };
+  // Present on every response. The fields are null on a machine with no GPU, or
+  // with a GPU whose driver exposes no utilisation figure (Intel), which is
+  // why `present` is separate from the numbers.
+  gpu: {
+    present: boolean;
+    vendor: string | null;
+    utilizationPercent: number | null;
+    memoryUsedBytes: number | null;
+    memoryTotalBytes: number | null;
+    source: string | null;
+  };
   process: { pid: number; rssBytes: number; heapBytes: number; uptimeSec: number };
   sampledAt: number;
 }
@@ -34,6 +45,7 @@ interface Sample {
   ts: number;
   cpu: number | null;
   mem: number;
+  gpu: number | null;
 }
 
 function Sparkline({
@@ -135,9 +147,10 @@ export function SystemStatsBadge() {
         setStats(data);
         const cpuPct = data.cpuPercent ?? null;
         const memPct = data.memory.usedPercent;
+        const gpuPct = data.gpu?.utilizationPercent ?? null;
         setHistory((prev) => {
           const cutoff = Date.now() - MAX_HISTORY_SECONDS * 1000;
-          const next: Sample[] = [...prev, { ts: data.sampledAt, cpu: cpuPct, mem: memPct }];
+          const next: Sample[] = [...prev, { ts: data.sampledAt, cpu: cpuPct, mem: memPct, gpu: gpuPct }];
           return next.filter((s) => s.ts >= cutoff);
         });
       } catch {
@@ -173,12 +186,23 @@ export function SystemStatsBadge() {
 
   const cpuPct: number | null = stats ? (stats.cpuPercent ?? null) : null;
   const memPct: number | null = stats ? stats.memory.usedPercent : null;
+  const gpuPct: number | null = stats?.gpu?.utilizationPercent ?? null;
+  // Distinguishes "this machine has no GPU" from "the GPU is busy but idle",
+  // which are otherwise the same em dash. An Intel iGPU is the third case:
+  // a device is there, the driver just exposes no percentage.
+  const gpuLabel = !stats?.gpu?.present
+    ? "no GPU detected"
+    : stats.gpu.vendor === "intel"
+      ? `${stats.gpu.vendor} gpu, driver exposes no load counter`
+      : `GPU: ${gpuPct === null ? "—" : gpuPct.toFixed(1)}%` +
+        (stats.gpu.memoryTotalBytes ? ` · ${formatBytes(stats.gpu.memoryUsedBytes ?? 0)} of ${formatBytes(stats.gpu.memoryTotalBytes)}` : "");
 
   const last = history.length > 0 ? history[history.length - 1] : null;
   const tooltip = stats
     ? `CPU: ${cpuPct === null ? "—" : cpuPct.toFixed(1)}% across ${stats.cpuCores} cores · ` +
       `loadavg ${stats.loadAvg["1m"].toFixed(2)} / ${stats.loadAvg["5m"].toFixed(2)} / ${stats.loadAvg["15m"].toFixed(2)} · ` +
       `memory ${formatBytes(stats.memory.usedBytes)} of ${formatBytes(stats.memory.totalBytes)} · ` +
+      `${gpuLabel} · ` +
       `process pid ${stats.process.pid} rss ${formatBytes(stats.process.rssBytes)}`
     : "Loading…";
 
@@ -230,6 +254,19 @@ export function SystemStatsBadge() {
           </span>
           <span style={{ color: "var(--text-dim)" }}>
             {stats ? formatBytes(stats.memory.totalBytes) : ""}
+          </span>
+        </span>
+        {/* Always rendered, so an em dash reads as "not measurable here" rather
+            than "there is no GPU at all" — otherwise the entry silently
+            disappears on exactly the machines a person is wondering about. */}
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={stats ? gpuLabel : undefined}>
+          <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: colorFor(gpuPct), flexShrink: 0 }} />
+          <span style={{ color: "var(--text-dim)" }}>GPU</span>
+          <span style={{ color: "var(--text)", fontWeight: 500 }}>
+            {gpuPct === null ? "—" : `${gpuPct.toFixed(0)}%`}
+          </span>
+          <span style={{ color: "var(--text-dim)" }}>
+            {stats?.gpu?.present ? (stats.gpu.vendor ?? "") : ""}
           </span>
         </span>
       </button>
@@ -292,11 +329,26 @@ export function SystemStatsBadge() {
             <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "var(--font-mono)", minWidth: 36, textAlign: "right" }}>
               {last ? `${last.mem.toFixed(0)}%` : "—"}
             </span>
+            <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>GPU</span>
+            <Sparkline samples={history} accessor={(s) => s.gpu} color={colorFor(gpuPct)} />
+            <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "var(--font-mono)", minWidth: 36, textAlign: "right" }}>
+              {last?.gpu === null || last?.gpu === undefined ? "—" : `${last.gpu.toFixed(0)}%`}
+            </span>
           </div>
           {stats && (
             <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border)", fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: 1.5 }}>
               <div>cores: {stats.cpuCores} · loadavg {stats.loadAvg["1m"].toFixed(2)} / {stats.loadAvg["5m"].toFixed(2)} / {stats.loadAvg["15m"].toFixed(2)}</div>
               <div>mem: {formatBytes(stats.memory.usedBytes)} / {formatBytes(stats.memory.totalBytes)}</div>
+              <div>
+                gpu: {stats.gpu.present
+                  ? stats.gpu.utilizationPercent === null
+                    ? `${stats.gpu.vendor ?? "unknown"}, no load counter exposed`
+                    : `${stats.gpu.utilizationPercent.toFixed(0)}%` +
+                      (stats.gpu.memoryTotalBytes
+                        ? ` · ${formatBytes(stats.gpu.memoryUsedBytes ?? 0)} / ${formatBytes(stats.gpu.memoryTotalBytes)} vram`
+                        : "")
+                  : "none detected"}
+              </div>
               <div>pid: {stats.process.pid} · rss: {formatBytes(stats.process.rssBytes)}</div>
               {/* Where the two totals came from. In a container or a cgroup-capped
                   service these differ from the host's `free -h`, and naming the
@@ -308,6 +360,12 @@ export function SystemStatsBadge() {
                   <br />
                   core count: {stats.cpuCoresSource ?? "unknown"}
                 </div>
+              )}
+              {/* The GPU source joins the other two because an em dash there is
+                  ambiguous on its own: a machine with no GPU, and a machine
+                  whose driver publishes no counter, look identical otherwise. */}
+              {stats.gpu.source !== null && (
+                <div style={{ marginTop: 4, opacity: 0.75 }}>gpu source: {stats.gpu.source}</div>
               )}
             </div>
           )}
