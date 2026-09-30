@@ -8,9 +8,24 @@ export interface FileTab {
   kind: "file";
   id: string;
   label: string;
+  /**
+   * Leer, solange der Tab keine Datei hat — dann ist er ein von Hand
+   * angelegter Platzhalter und traegt `label` als eigene Beschriftung. Nur das
+   * grosse Explorer-Fenster legt solche Tabs an; die Leiste im rechten Panel
+   * kennt sie nicht. Solange `filePath` leer ist, darf kein `FileViewer`
+   * gerendert werden: er wuerde einen leeren Pfad laden und mit einer
+   * Fehlermeldung enden.
+   */
   filePath: string;
   sourceSessionId?: string | null;
   initialDisplayMode?: "source" | "preview" | "diff" | "edit";
+  /**
+   * Verzeichnis, in dem der Tab angelegt wurde. Nur gesetzt bei einem Tab
+   * ohne Datei, und nur damit dessen Auswahl-Ansicht dort startet, wo der
+   * Nutzer den Baum gerade stehen hat. Beim Zuweisen einer Datei ist der Wert
+   * bedeutungslos und bleibt einfach stehen.
+   */
+  startPath?: string;
 }
 
 export interface TerminalTab {
@@ -236,8 +251,20 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
               opacity: dragging ? 0.85 : 1,
             }}
           >
+            {/* Ein Tab ohne Datei bekommt bewusst KEIN Datei-Icon. Der Pfad
+                von `getFileIcon` waere der leere String, der ohne Treffer in
+                `EXTENSION_ICONS` auf das generische Dateisymbol zurueckfaellt
+                — und damit behauptete der Tab, eine Datei zu zeigen. Ein
+                leerer Tab braucht ein Merkmal, das seinen Zustand nennt und
+                nicht seinen Inhalt. */}
             <span style={{ flexShrink: 0, opacity: isActive ? 1 : 0.7, display: "flex", alignItems: "center" }}>
-              {getFileIcon(tab.label, 13)}
+              {tab.kind === "file" && !tab.filePath ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              ) : (
+                getFileIcon(tab.label, 13)
+              )}
             </span>
             <span
               style={{
@@ -246,7 +273,11 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
                 flex: 1,
                 fontWeight: isActive ? 500 : 400,
               }}
-              title={tab.kind === "file" ? tab.filePath : `Terminal · ${tab.label}`}
+              // Ohne Datei waere `tab.filePath` leer und der Tooltip stumm —
+              // sichtbar ist dann nur der Titel des Tabs. Die Beschriftung
+              // steht als Rueckfall dahinter, weil sie auch fuer einen leeren
+              // Tab das einzige ist, was ihn benennt.
+              title={tab.kind === "file" ? (tab.filePath || tab.label) : `Terminal · ${tab.label}`}
             >
               {tab.label}
             </span>

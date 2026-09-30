@@ -113,6 +113,20 @@ interface Props {
    * oeffnen darf, waere ein Klick ohne Ende.
    */
   allowPopup?: boolean;
+  /**
+   * Wohin ein Klick auf eine Bilddatei fuehrt.
+   *
+   * `"preview"` (Vorgabe) oeffnet die grosse Bildvorschau ueber der Seite — das
+   * Verhalten der Seitenleiste, unveraendert. `"openFile"` schickt das Bild
+   * stattdessen an `onOpenFile`, also in einen Tab des aufrufenden Fensters.
+   * Die Instanz im Fenster setzt `"openFile"`: dort sollen Bilder wie jede
+   * andere Datei als Tab landen, nicht in einem zweiten Overlay.
+   *
+   * Der Schalter liegt an der Instanz und nicht an `onOpenImage`, weil das kein
+   * Prop ist, sondern der interne Zustandsschreiber — ein Uebergeben von aussen
+   * gibt es dort nicht.
+   */
+  imageTarget?: "preview" | "openFile";
 }
 
 export interface FileExplorerHandle {
@@ -481,6 +495,114 @@ function PropertiesDialog({ target, onClose, t }: { target: SelectionEntry; onCl
 }
 
 /**
+ * Was ein Tab anzeigt, in dem noch keine Datei steht.
+ *
+ * KEIN `FileViewer` mit leerem `filePath`. Der Viewer laedt den Pfad sofort:
+ * ein leerer ergibt einen Fehler, und der Nutzer saehe eine rote Meldung an
+ * der Stelle, an der er gerade auf "Neuer Tab" geklickt hat — die Anzeige
+ * wuerde den Klick als Fehlschlag melden, obwohl er geklappt hat.
+ *
+ * Stattdessen zwei Wege zur Datei, beide im Fenster:
+ *
+ * - Der Baum links ist ohnehin da. Ein Klick dort fuellt diesen Tab, weil
+ *   `handleOpenFile` einen leeren Tab zuerst befuellt und erst danach einen
+ *   zweiten anlegt. Der Text hier sagt das dem Nutzer, weil es nicht
+ *   offensichtlich ist.
+ * - Das Pfadfeld fuer den Fall, dass die Datei weit weg liegt und der Weg
+ *   durch die Ordner zu lang waere. `FileBrowserDialog` waere dafuer zu
+ *   gross: es ist ein Modal ueber allem, waehrend hier die zweite Spalte des
+ *   Fensters genau die freie Flaeche ist, die gefuellt werden soll.
+ */
+function EmptyTabView({
+  startPath,
+  onPick,
+  t,
+}: {
+  /** Ordner, in dem der Tab angelegt wurde — dort startet auch das Feld. */
+  startPath: string;
+  onPick: (filePath: string) => void;
+  t: Translate;
+}) {
+  const [path, setPath] = useState(startPath);
+
+  // Beim Schliessen eines leeren Tabs kann ein zweiter leerer Tab derselbe
+  // Komponente sein; ihr Zustand muss dann dem neuen Startordner folgen,
+  // sonst zeigte das Feld den Pfad eines Tabs, den es nicht mehr gibt.
+  useEffect(() => setPath(startPath), [startPath]);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 14,
+        height: "100%",
+        padding: 24,
+        textAlign: "center",
+      }}
+    >
+      <div style={{ color: "var(--text-dim)", fontSize: 12, lineHeight: 1.5, maxWidth: 280 }}>
+        {t("files.explorerWindowPickFile")}
+      </div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          // Leer eingetragen waere ein Dateiname ohne Verzeichnis, und der
+          // Viewer wuerde daran scheitern. Ohne Eingabe passiert deshalb gar
+          // nichts, statt eine Fehlermeldung zu produzieren.
+          if (path.trim()) onPick(path.trim());
+        }}
+        style={{ display: "flex", gap: 6, width: "100%", maxWidth: 420 }}
+      >
+        <input
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+          placeholder={startPath}
+          aria-label={t("files.explorerWindowOpenPath")}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            height: 26,
+            padding: "0 8px",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            background: "var(--bg)",
+            color: "var(--text)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+          }}
+        />
+        <button
+          type="submit"
+          className="omp-press"
+          disabled={!path.trim()}
+          style={{
+            height: 26,
+            padding: "0 10px",
+            flexShrink: 0,
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            background: "transparent",
+            color: "var(--text-muted)",
+            cursor: path.trim() ? "pointer" : "not-allowed",
+            opacity: path.trim() ? 1 : 0.45,
+            fontSize: 11,
+            fontWeight: 600,
+          }}
+        >
+          {t("files.explorerWindowOpenPath")}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/**
  * Der KOMPLETTE Explorer in einem grossen, zentrierten Fenster.
  *
  * Bewusst kein Bild-Popup und kein Dialog mit einer Bestaetigung: hier steht
@@ -527,6 +649,34 @@ function FileExplorerWindow({
   const titleId = useId();
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  // Zaehler fuer die Ids der leeren Tabs. Ein Ref und kein State, weil er
+  // nichts anzeigt: er muss nur garantieren, dass zwei leere Tabs nie dieselbe
+  // Id bekommen. `titleId` steht als Praefix davor, weil `useId` je
+  // Fenster-Instanz eindeutig ist — der Zaehler beginnt nach einem Remount
+  // wieder bei null, und ohne das Praefix kaemen die Ids zweier Fenster
+  // durcheinander.
+  const emptyTabSeqRef = useRef(0);
+  /**
+   * Der Ordner, den der Baum dieses Fensters gerade zeigt — und damit der
+   * Startort eines neu angelegten Tabs.
+   *
+   * Er kommt NICHT aus `initialViewState`. Die Prop klingt nach dem Zustand
+   * beim Oeffnen, und das ist sie auch: der Explorer darin liest sie einmal
+   * in seinen Startzustand (Zeile 1717) und meldet danach selbst. Dass die
+   * Elterninstanz sie zufaellig wieder herueberschreibt, ist eine
+   * Nebenwirk ihres eigenen Zustands, nicht ihre Zusage. Hier steht der Pfad
+   * deshalb aus dem, was tatsaechlich gemeldet wird.
+   */
+  const [currentDir, setCurrentDir] = useState(initialViewState?.currentPath ?? cwd);
+
+  // Der Explorer meldet nach aussen; das Fenster haelt denselben Wert noch
+  // einmal, weil es ihn fuer den neuen Tab braucht. Beides in einem Aufruf:
+  // die Elterninstanz verliert ihren Blick auf den Baum nicht, und hier
+  // entsteht kein zweiter Zustand, der auseinanderlaufen koennte.
+  const handleViewStateChange = useCallback((view: ExplorerViewState) => {
+    setCurrentDir(view.currentPath);
+    onViewStateChange(view);
+  }, [onViewStateChange]);
 
   /**
    * Der einzige Weg aus dem Explorer dieses Fensters in einen Tab. Gleiche
@@ -534,12 +684,48 @@ function FileExplorerWindow({
    * zweiter Klick auf dieselbe Datei aktiviert den vorhandenen Tab, statt einen
    * zweiten anzulegen. `modeHint` wandert mit, damit ein Klick in der
    * Aenderungsliste weiterhin die Diff-Ansicht oeffnet.
+   *
+   * `activeTabId` steht in der Abhaengigkeitsliste, weil das Fuellen eines
+   * leeren Tabs davon abhaengt, welcher Tab gerade vorne steht. Muster aus
+   * `handleCloseTab` unten: der Klick haelt damit die Liste, die der Nutzer
+   * gerade sieht.
    */
   const handleOpenFile = useCallback((filePath: string, fileName: string, options?: OpenFileOptions) => {
     const tabId = `file:${filePath}`;
     const modeHint = options?.modeHint;
     setTabs((prev) => {
       const existing = prev.find((tab) => tab.id === tabId);
+      // Ein Tab ohne Datei ist ein Platzhalter, kein Ziel. Fuellt ihn der
+      // Klick auf eine Datei, wandert die Datei hinein, statt einen zweiten
+      // Tab daneben zu bekommen — der Nutzer wollte *diesen* Tab fuellen.
+      // Deshalb wird hier nicht angehaengt, sondern ersetzt, und zwar an
+      // der Stelle des Platzhalters: waere er in die Mitte der Leiste
+      // gesprungen, wuerde die Datei dem Tab entrissen, den der Nutzer
+      // gerade ausgewahlt hat.
+      const activeIndex = activeTabId === null ? -1 : prev.findIndex((tab) => tab.id === activeTabId);
+      const hasPlaceholder = activeIndex >= 0 && prev[activeIndex].filePath === "";
+
+      if (hasPlaceholder) {
+        // Die Datei ist an anderer Stelle schon offen. Ein befuellter Tab
+        // waere dann eine Dublette neben der Datei, die der Nutzer gerade
+        // sieht, also loest sich der Platzhalter auf und der vorhandene
+        // Tab wird zum aktiven.
+        if (existing) {
+          return prev
+            .filter((_, index) => index !== activeIndex)
+            .map((tab) => (
+              tab.id === tabId && modeHint && tab.initialDisplayMode !== modeHint
+                ? { ...tab, initialDisplayMode: modeHint }
+                : tab
+            ));
+        }
+        return [
+          ...prev.slice(0, activeIndex),
+          { kind: "file", id: tabId, label: fileName, filePath, initialDisplayMode: modeHint },
+          ...prev.slice(activeIndex + 1),
+        ];
+      }
+
       if (!existing) {
         return [...prev, { kind: "file", id: tabId, label: fileName, filePath, initialDisplayMode: modeHint }];
       }
@@ -547,23 +733,51 @@ function FileExplorerWindow({
       return prev.map((tab) => (tab.id === tabId ? { ...tab, initialDisplayMode: modeHint } : tab));
     });
     setActiveTabId(tabId);
-  }, []);
+  }, [activeTabId]);
+
+  /**
+   * Legt einen leeren Tab an und stellt ihn voran.
+   *
+   * Angehaengt wird, nicht eingefuegt: die Tabs eines Fensters wachsen wie im
+   * Hauptpanel nach rechts, und die Leiste zeigt den neuesten am rechten
+   * Rand, wo er ohne Scrollen erreichbar ist. Das ist dieselbe Regel, nach der
+   * eine per Klick geoeffnete Datei hinten landet.
+   *
+   * Der Tab bekommt den Ordner mit, den der Baum gerade zeigt. Ohne das
+   * muesste die Auswahl-Ansicht mit `cwd` starten, also am Projektwurzel, und
+   * der Nutzer muesste sich von dort jeden Weg zur Datei neu klicken.
+   */
+  const handleNewTab = useCallback(() => {
+    const id = `empty:${titleId}:${emptyTabSeqRef.current++}`;
+    setTabs((prev) => [
+      ...prev,
+      { kind: "file", id, label: t("files.explorerWindowEmptyTab"), filePath: "", startPath: currentDir },
+    ]);
+    setActiveTabId(id);
+  }, [currentDir, t, titleId]);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
 
+  /**
+   * Bewusst zwei getrennte Setter statt eines `setActiveTabId` *innerhalb*
+   * des `setTabs`-Updaters: ein Updater muss eine reine Funktion sein, und
+   * React ruft es in der Entwicklung zweimal auf, um genau solche
+   * Seiteneffekte zu finden. Ausserdem braucht der Nachfolger die Liste
+   * *nach* dem Schliessen, und die bekommt man nur aus dem vorigen Zustand.
+   * `tabs` steht deshalb in der Abhaengigkeitsliste — so haelt der Klick
+   * immer die Liste, die der Nutzer gerade sieht. Muster aus `AppShell.tsx`.
+   */
   const handleCloseTab = useCallback((tabId: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((tab) => tab.id !== tabId);
-      setActiveTabId((current) => {
-        if (current !== tabId) return current;
-        // Wie im Hauptpanel: der letzte linke Nachbar wird aktiv. Mit dem
-        // leeren Leerzustand waere sonst jeder Klick auf das X ein Sprung in
-        // den Leer-Zustand.
-        return next.length > 0 ? next[next.length - 1].id : null;
-      });
-      return next;
+    const next = tabs.filter((tab) => tab.id !== tabId);
+    setTabs(next);
+    setActiveTabId((current) => {
+      if (current !== tabId) return current;
+      // Der letzte linke Nachbar wird aktiv, wie im Hauptpanel. Ohne diese
+      // Regel waere jeder Klick auf das X ein Sprung in den Leer-Zustand,
+      // auch wenn noch sechs Tabs offen sind.
+      return next.length > 0 ? next[next.length - 1].id : null;
     });
-  }, []);
+  }, [tabs]);
 
   const handleReorder = useCallback((tabId: string, beforeId: string) => {
     setTabs((prev) => {
@@ -638,11 +852,14 @@ function FileExplorerWindow({
           </button>
         </div>
 
-        {/* Waagerechte Leiste direkt unter der Kopfzeile, darunter der Baum
-            und daneben der Inhalt. Waagerecht, weil ein senkrechter Streifen
-            dem Baum genau die Breite genommen haette, um die es hier geht. */}
-        {tabs.length > 0 && (
-          <div className={windowStyles.tabBar}>
+        {/* Leiste und Arbeitsbereich. Die Leiste ist IMMER da, auch ohne
+            offene Tabs: vorher stand sie hinter `tabs.length > 0`, und der
+            Nutzer sah an einem Fenster ohne Tabs nicht, dass er Dateien hier
+            als Tabs oeffnen kann. Ohne die Bedingung bleibt der Knopf an
+            derselben Stelle erreichbar, und mit Tabs ist die Leiste wie
+            zuvor. */}
+        <div className={windowStyles.tabBar}>
+          <div className={windowStyles.tabBarScroll}>
             <TabBar
               tabs={tabs}
               activeTabId={activeTabId ?? ""}
@@ -651,37 +868,69 @@ function FileExplorerWindow({
               onReorder={handleReorder}
             />
           </div>
-        )}
-
-        <div className={windowStyles.explorer}>
-          <FileExplorer
-            cwd={cwd}
-            onOpenFile={handleOpenFile}
-            initialViewState={initialViewState}
-            onViewStateChange={onViewStateChange}
-            changesCollapsed={changesCollapsed}
-            allowPopup={false}
-          />
+          <button
+            type="button"
+            className={windowStyles.newTabButton}
+            onClick={handleNewTab}
+            title={t("files.explorerWindowNewTab")}
+            aria-label={t("files.explorerWindowNewTab")}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
         </div>
 
-        {/* Derselbe `FileViewer` wie im rechten Panel der Hauptseite. Eine
-            eigene Ansicht hier wuerde von der Panel-Fassung abdriften, und
-            gerade der Diff- und der Markdown-Umschalter sind zu gross, um
-            sie zu duplizieren. Kein `sourceSessionId`, weil der Explorer
-            bereits auf `cwd` steht; ohne die Mention-Props, weil sie in den
-            Chat der Hauptseite schreiben wuerden, den man hier nicht sieht. */}
-        {activeTab ? (
-          <div className={windowStyles.content}>
-            <FileViewer
-              filePath={activeTab.filePath}
+        {/* Baum links, Inhalt rechts. `.workspace` macht daraus eine Zeile;
+            ohne diese Huelle waeren beide Abschnitte Geschwister im Panel
+            und stuenden untereinander, wo bei festen 90vh der Inhalt die
+            Flaeche fraess und der Baum auf null zusammengedrueckt wuerde. */}
+        <div className={windowStyles.workspace}>
+          <div className={windowStyles.explorer}>
+            <FileExplorer
               cwd={cwd}
-              initialDisplayMode={activeTab.initialDisplayMode}
-              onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath))}
+              onOpenFile={handleOpenFile}
+              initialViewState={initialViewState}
+              onViewStateChange={handleViewStateChange}
+              changesCollapsed={changesCollapsed}
+              allowPopup={false}
+              // Bilder sind hier ganz normale Tabs. Ohne diesen Schalter wuerde
+              // ein Klick auf ein Bild weiterhin das grosse Overlay oeffnen und
+              // der Nutzer haette neben dem Fenster noch eines darueber.
+              imageTarget="openFile"
             />
           </div>
-        ) : (
-          <div className={windowStyles.empty}>{t("files.explorerWindowNoTab")}</div>
-        )}
+
+          {/* Derselbe `FileViewer` wie im rechten Panel der Hauptseite. Eine
+              eigene Ansicht hier wuerde von der Panel-Fassung abdriften, und
+              gerade der Diff- und der Markdown-Umschalter sind zu gross, um
+              sie zu duplizieren. Kein `sourceSessionId`, weil der Explorer
+              bereits auf `cwd` steht; ohne die Mention-Props, weil sie in den
+              Chat der Hauptseite schreiben wuerden, den man hier nicht sieht. */}
+          {activeTab ? (
+            <div className={windowStyles.content}>
+              {/* Ein Tab ohne Datei traegt keinen Viewer: der wuerde einen
+                  leeren Pfad laden und mit einer Fehlermeldung enden. Statt
+                  dessen die Auswahl-Ansicht, die den Tab erst befuellt. */}
+              {activeTab.filePath ? (
+                <FileViewer
+                  filePath={activeTab.filePath}
+                  cwd={cwd}
+                  initialDisplayMode={activeTab.initialDisplayMode}
+                  onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath))}
+                />
+              ) : (
+                <EmptyTabView
+                  startPath={activeTab.startPath ?? currentDir}
+                  onPick={(filePath) => handleOpenFile(filePath, getFileName(filePath))}
+                  t={t}
+                />
+              )}
+            </div>
+          ) : (
+            <div className={windowStyles.empty}>{t("files.explorerWindowNoTab")}</div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1004,6 +1253,7 @@ function TreeNode({
   selectedPaths,
   onToggleSelected,
   onOpenImage,
+  imageTarget,
   t,
 }: {
   node: FileNode;
@@ -1027,6 +1277,13 @@ function TreeNode({
    * sich Bilder wie zuvor und gehen in den normalen Datei-Tab.
    */
   onOpenImage?: (filePath: string, fileName: string) => void;
+  /**
+   * Wohin Bilder gehen. Nur fuer den Augen-Knopf wichtig: bei `"openFile"`
+   * wuerde er ueber `onOpenImage` zwar schon den Tab oeffnen, aber als Knopf
+   * mit dem Titel "grosse Vorschau" taeuscht er das Versprechen, das er nicht
+   * einloest. Siehe `canPreviewImage`.
+   */
+  imageTarget: "preview" | "openFile";
   t: Translate;
 }) {
   const open = expandedPaths.has(node.fullPath);
@@ -1049,8 +1306,17 @@ function TreeNode({
    * Knopf weg, und der Klick auf die Zeile geht wie zuvor an `onOpenFile`.
    * Ordner sind nie Bilder, `isImagePath` entscheidet also nur noch ueber die
    * Endung.
+   *
+   * `imageTarget === "openFile"` nimmt ihn ebenfalls weg, und das ist der
+   * Punkt, an dem der Umbau sonst halb geblieben waere. Der Aufrufer ist dann
+   * zwar derselbe `onOpenImage` und wuerde den Tab oeffnen — aber der Knopf
+   * heisst "grosse Vorschau", hat den Titel `files.openImageLarge` und steht
+   * da, wo in der Seitenleiste das Overlay aufgeht. Er wuerde im Fenster also
+   * etwas anderes tun als sein Name sagt, und der Nutzer haelt ihn fuer
+   * kaputt, wenn er denselben Knopf an beiden Orten sieht. Die Vorschau gibt
+   * es im Fenster nicht mehr; ein Knopf dafuer erst recht nicht.
    */
-  const canPreviewImage = onOpenImage !== undefined && !node.isDir && isImagePath(node.name);
+  const canPreviewImage = imageTarget === "preview" && onOpenImage !== undefined && !node.isDir && isImagePath(node.name);
 
   const loadChildren = useCallback(async (force = false) => {
     if (loaded && !force) return;
@@ -1338,6 +1604,7 @@ function TreeNode({
               selectedPaths={selectedPaths}
               onToggleSelected={onToggleSelected}
               onOpenImage={onOpenImage}
+              imageTarget={imageTarget}
               t={t}
             />
           ))}
@@ -1558,6 +1825,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   initialViewState,
   onViewStateChange,
   allowPopup = true,
+  imageTarget = "preview",
 }, ref) {
   const { t } = useI18n();
   const [roots, setRoots] = useState<FileNode[]>([]);
@@ -1721,9 +1989,27 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setPopupViewState((previous) => previous && sameViewState(previous, view) ? previous : view);
   }, []);
 
+  /**
+   * Der eine Weg, auf dem ein Bild den Explorer verlässt — ob per Zeilen-Klick,
+   * per Augen-Knopf oder per Kontextmenü. `imageTarget` entscheidet, wohin:
+   *
+   * - `"preview"` (die Seitenleiste) setzt den Vorschau-Zustand. Das Overlay
+   *   gehoert zu dieser Instanz und wird mit ihr aus dem DOM entfernt.
+   * - `"openFile"` (die Instanz im Fenster) schickt das Bild an `onOpenFile`
+   *   und damit in einen Tab. `setImagePreview` bliebe hier eine zweite,
+   *   unsichtbare Anzeige: das Bild waere zweimal offen und nur einmal davon
+   *   sichtbar, und der Zustand wuerde liegen bleiben, wenn der Tab wandert.
+   *
+   * Beide Ziele bekommen dieselben zwei Argumente, deshalb muss der Aufrufer
+   * den Unterschied nicht kennen — er ruft nur `onOpenImage`.
+   */
   const openImagePreview = useCallback((filePath: string, name: string) => {
+    if (imageTarget === "openFile") {
+      onOpenFile(filePath, name);
+      return;
+    }
     setImagePreview({ path: filePath, name });
-  }, []);
+  }, [imageTarget, onOpenFile]);
 
   /**
    * Oeffnet den Explorer im grossen Fenster. Der mitgegebene Blick ist der
@@ -2237,6 +2523,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                   selectedPaths={selectedPaths}
                   onToggleSelected={handleToggleSelected}
                   onOpenImage={openImagePreview}
+                  imageTarget={imageTarget}
                   t={t}
                 />
               ))}
@@ -2256,7 +2543,15 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           onClose={closeContextMenu}
           onMutated={handleMutated}
           onNotify={handleActionNotice}
-          onOpenImage={openImagePreview}
+          // Der Eintrag "Vorschau" haengt in `FileContextMenu` allein daran,
+          // ob dieser Callback gesetzt ist (Zeile 399). Bei `"openFile"` waere
+          // er damit zweierlei: er ruft zwar ueber `openImagePreview` den Tab
+          // auf, heisst aber "Vorschau", laesst das Menue offen und verspricht
+          // ein Overlay, das es hier gar nicht gibt. Kein Callback, kein
+          // Eintrag — der Klick auf die Bildzeile im Fenster reicht fuer den
+          // Tab. In der Seitenleiste ist `imageTarget` "preview", dort bleibt
+          // der Eintrag also genau wie zuvor.
+          onOpenImage={imageTarget === "preview" ? openImagePreview : undefined}
         />
       )}
       {toolbarTransfer && selection.size > 0 && (
