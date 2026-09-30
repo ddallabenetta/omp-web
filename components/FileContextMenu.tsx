@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { encodeFilePathForApi, getFileDirectory } from "@/lib/file-paths";
+import { isImagePath } from "@/lib/file-types";
 import { copyText } from "@/lib/clipboard";
 import { FileBrowserDialog } from "./FileBrowserDialog";
 import { useI18n } from "@/hooks/useI18n";
@@ -37,7 +38,7 @@ interface FileActionResponse {
 }
 
 type MenuPhase = "root" | "rename" | "new-folder" | "confirm-delete";
-type MenuAction = "copy-path" | "new-folder" | "rename" | "copy-to" | "move-to" | "delete";
+type MenuAction = "copy-path" | "preview" | "new-folder" | "rename" | "copy-to" | "move-to" | "delete";
 type TransferKind = "copy" | "move";
 
 interface FileContextMenuProps {
@@ -45,6 +46,13 @@ interface FileContextMenuProps {
   onClose: () => void;
   onMutated: () => void;
   onNotify: (notice: FileActionNotice) => void;
+  /**
+   * Optionaler Weg zur grossen Bildvorschau. Fehlt er, bekommen Bilddateien
+   * keinen Preview-Eintrag und verhalten sich wie jede andere Datei — die
+   * Aktion haengt an der Verfuegbarkeit des Aufrufers, nicht an der Art der
+   * Datei.
+   */
+  onOpenImage?: (filePath: string, fileName: string) => void;
 }
 
 /** Rand zwischen Panel und Viewportkante. */
@@ -202,7 +210,7 @@ interface MenuItem {
  * `onMutated` bzw. `onNotify` nach aussen, damit der Aufrufer das Ergebnis an
  * einer Stelle behandelt statt in jedem Zweig des Panels.
  */
-export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileContextMenuProps) {
+export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenImage }: FileContextMenuProps) {
   const { t } = useI18n();
   const [phase, setPhase] = useState<MenuPhase>("root");
   const [draft, setDraft] = useState("");
@@ -378,6 +386,15 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
         icon: <MenuIcon><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><line x1="12" y1="11" x2="12" y2="16" /><line x1="9.5" y1="13.5" x2="14.5" y2="13.5" /></MenuIcon>,
       });
     } else {
+      // Nur Bilder bekommen den Vorschau-Eintrag. Er erscheint vor Copy path,
+      // weil "was ist das fuer ein Bild" die häufigere Frage ist als der Pfad.
+      if (onOpenImage && isImagePath(target.name)) {
+        list.push({
+          action: "preview",
+          label: t("files.contextPreview"),
+          icon: <MenuIcon><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m4 17 5-4 3.5 2.5L16 12l4 4" /></MenuIcon>,
+        });
+      }
       list.push({
         action: "copy-path",
         label: t("files.contextCopyPath"),
@@ -408,16 +425,23 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify }: FileCo
       danger: true,
     });
     return list;
-  }, [t, target.isDir]);
+  }, [t, target.isDir, target.name, onOpenImage]);
 
   const selectAction = useCallback((action: MenuAction) => {
     if (action === "copy-path") { handleCopyPath(); return; }
+    if (action === "preview") {
+      // Das Menue schliesst nicht selbst: die Vorschau ist ein zentriertes
+      // Overlay, das ueber allem liegt. Wer beide offen haelt, sieht im
+      // Hintergrund noch die Zeile, aus der herausgeklickt wurde.
+      onOpenImage?.(target.path, target.name);
+      return;
+    }
     if (action === "new-folder") { setDraft(""); setPhase("new-folder"); return; }
     if (action === "rename") { setDraft(target.name); setPhase("rename"); return; }
     if (action === "copy-to") { handleTransferStart("copy"); return; }
     if (action === "move-to") { handleTransferStart("move"); return; }
     setPhase("confirm-delete");
-  }, [handleCopyPath, handleTransferStart, target.name]);
+  }, [handleCopyPath, handleTransferStart, onOpenImage, target.name, target.path]);
 
   const panelLabel = phase === "rename"
     ? t("files.contextRename")

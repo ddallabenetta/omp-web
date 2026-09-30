@@ -25,11 +25,26 @@ export interface FileImagePreviewProps {
 
 type LoadState = "loading" | "loaded" | "error";
 
-/** Zoomfaktor-Faktoren. `scale` ist immer relativ zur Einpassgroesse. */
+/**
+ * Zoomfaktoren. `scale` ist immer relativ zur Einpassgroesse, damit das
+ * Einpassen bei genau 1 liegt und die Panklemmen direkt daneben berechnet
+ * werden koennen.
+ *
+ * Die untere und obere Grenze sind trotzdem an der *Originalgroesse*
+ * festgemacht: 10 % ist zehn Prozent des Originals, nicht zehn Prozent eines
+ * schon verkleinerten Bildes. Bei einem 4-fach zu grossen Bild waere der
+ * Faktor sonst schon am Anschlag, bevor der Nutzer ueberhaupt die Originalgroesse
+ * erreicht.
+ */
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
-/** Faktor je Mausrad- oder Tastaturschritt. */
-const ZOOM_STEP = 1.2;
+/**
+ * Faktor je Mausrad- oder Tastaturschritt. Mit 1.2 faengt eine Stufe
+ * quadratisch an, weil die Schrittlaenge mit dem aktuellen Wert wachsen soll;
+ * 1.25 ist die naechste handliche Stufe und erreicht 100 % in einer geraden
+ * Folge von Klicks statt sie zu ueberspringen.
+ */
+const ZOOM_STEP = 1.25;
 /** Rand um das Bild, damit es im Einpasszustand nicht an der Rahmenkante klebt. */
 const STAGE_PADDING = 32;
 
@@ -48,8 +63,15 @@ interface ZoomTransform {
 
 const FIT_TRANSFORM: ZoomTransform = { scale: 1, offsetX: 0, offsetY: 0 };
 
-function clampZoom(value: number): number {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+/**
+ * Begrenzt den Zoom auf [min, max] in *Render*-Faktoren, also relativ zur
+ * Originalgroesse. Die uebergebenen Grenzen kommen vom Aufrufer, weil nur er
+ * die Einpassgroesse kennt: ein Bild, das auf 83 % eingepasst wurde, muss bis
+ * auf 10 % des Originals heruntergehen duerfen, also bis zum Faktor 0.12, und
+ * darf nicht bei 0.1 abgeschnitten werden, bevor der Nutzer dort war.
+ */
+function clampZoom(value: number, min = MIN_ZOOM, max = MAX_ZOOM): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 /**
@@ -58,8 +80,14 @@ function clampZoom(value: number): number {
  * jedem Rad-Schritt in eine andere Ecke, und wer gerade ein Detail sucht,
  * verliert es.
  */
-function zoomAroundPointer(current: ZoomTransform, factor: number, pointer: { x: number; y: number } | null): ZoomTransform {
-  const scale = clampZoom(current.scale * factor);
+function zoomAroundPointer(
+  current: ZoomTransform,
+  factor: number,
+  pointer: { x: number; y: number } | null,
+  min: number,
+  max: number,
+): ZoomTransform {
+  const scale = clampZoom(current.scale * factor, min, max);
   if (scale === current.scale || pointer === null) return { ...current, scale };
   const ratio = scale / current.scale;
   return {
@@ -157,12 +185,23 @@ export function FileImagePreview({
   const nativeZoom = clampZoom(1 / fitScale);
 
   /**
+   * Unter- und Obergrenze des Zoomfaktors, ausgedrueckt in Fakten ueber die
+   * Einpassgroesse. MIN_ZOOM und MAX_ZOOM beschreiben die Anzeige relativ zum
+   * Original; hier stehen sie als Faktoren ueber `fitScale`, damit `scale`
+   * selbst in seinem bisherigen Bezug bleibt.
+   */
+  const [scaleMin, scaleMax] = useMemo(
+    () => [clampZoom(MIN_ZOOM / fitScale), clampZoom(MAX_ZOOM / fitScale)],
+    [fitScale],
+  );
+
+  /**
    * Haelt das Bild im Rahmen: solange es kleiner als der Rahmen ist, bleibt
    * der Versatz bei 0 (es ist ohnehin zentriert), sonst ist er auf den
    * Ueberhang begrenzt, damit kein Teil des Bildes unerreichbar wird.
    */
   const normalize = useCallback((value: ZoomTransform): ZoomTransform => {
-    const scale = clampZoom(value.scale);
+    const scale = clampZoom(value.scale, scaleMin, scaleMax);
     if (!naturalSize || !stageSize) return { scale, offsetX: value.offsetX, offsetY: value.offsetY };
     const renderScale = fitScale * scale;
     const maxX = Math.max(0, (naturalSize.width * renderScale - (stageSize.width - STAGE_PADDING * 2)) / 2);
@@ -172,11 +211,11 @@ export function FileImagePreview({
       offsetX: Math.min(maxX, Math.max(-maxX, value.offsetX)),
       offsetY: Math.min(maxY, Math.max(-maxY, value.offsetY)),
     };
-  }, [fitScale, naturalSize, stageSize]);
+  }, [fitScale, naturalSize, scaleMax, scaleMin, stageSize]);
 
   const applyZoom = useCallback((factor: number, pointer: { x: number; y: number } | null = null) => {
-    updateZoom((previous) => normalize(zoomAroundPointer(previous, factor, pointer)));
-  }, [normalize, updateZoom]);
+    updateZoom((previous) => normalize(zoomAroundPointer(previous, factor, pointer, scaleMin, scaleMax)));
+  }, [normalize, scaleMax, scaleMin, updateZoom]);
 
   const fitToWindow = useCallback(() => {
     updateZoom(() => normalize(FIT_TRANSFORM));
@@ -283,8 +322,15 @@ export function FileImagePreview({
   if (!open) return null;
 
   const renderScale = fitScale * transform.scale;
-  const zoomPercent = Math.round(transform.scale * 100);
-  const canPan = transform.scale > 1;
+  // Die Anzeige bezieht sich auf die Originalpixel, nicht auf die eingepasste
+  // Darstellung. Sonst steht bei einem uebergrossen Bild "83 %" im Panel,
+  // obwohl gar nichts verkleinert wurde, und der Doppelklick auf "Originalgroesse"
+  // springt auf 120 % statt auf die erwarteten 100 %.
+  const zoomPercent = Math.round(renderScale * 100);
+  // Ueber den Einpass-Zustand hinaus ist erst dann Schwenken sinnvoll, wenn
+  // das Bild in Originalpixeln betrachtet wird — unterhalb davon ist es kleiner
+  // als sein Rahmen und ohnehin zentriert.
+  const canPan = transform.scale > fitScale;
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     // Unterhalb der Einpassgroesse waere die Bewegung sinnlos und wuerde das
@@ -452,7 +498,7 @@ export function FileImagePreview({
             type="button"
             className={`omp-press ${styles.toolButton}`}
             onClick={() => applyZoom(1 / ZOOM_STEP)}
-            disabled={transform.scale <= MIN_ZOOM}
+            disabled={transform.scale <= scaleMin}
             title={t("fileImagePreview.zoomOut")}
             aria-label={t("fileImagePreview.zoomOut")}
           >
@@ -465,7 +511,7 @@ export function FileImagePreview({
             type="button"
             className={`omp-press ${styles.toolButton}`}
             onClick={() => applyZoom(ZOOM_STEP)}
-            disabled={transform.scale >= MAX_ZOOM}
+            disabled={transform.scale >= scaleMax}
             title={t("fileImagePreview.zoomIn")}
             aria-label={t("fileImagePreview.zoomIn")}
           >

@@ -11,8 +11,10 @@ import {
   normalizeFilePathSlashes,
 } from "@/lib/file-paths";
 import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
+import { isImagePath } from "@/lib/file-types";
 import { FileActionToast, FileContextMenu, type FileActionNotice, type FileMenuTarget } from "./FileContextMenu";
 import { FileBrowserDialog } from "./FileBrowserDialog";
+import { FileImagePreview } from "./FileImagePreview";
 import { useI18n } from "@/hooks/useI18n";
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -652,6 +654,7 @@ function TreeNode({
   changedDirectoryPaths,
   selectedPaths,
   onToggleSelected,
+  onOpenImage,
   t,
 }: {
   node: FileNode;
@@ -669,6 +672,12 @@ function TreeNode({
   changedDirectoryPaths: Set<string>;
   selectedPaths: Set<string>;
   onToggleSelected: (entry: SelectionEntry) => void;
+  /**
+   * Wird fuer Bilddateien statt `onOpenFile` aufgerufen, damit der Explorer
+   * die grosse Vorschau oeffnen kann. Optional: fehlt der Callback, verhalten
+   * sich Bilder wie zuvor und gehen in den normalen Datei-Tab.
+   */
+  onOpenImage?: (filePath: string, fileName: string) => void;
   t: Translate;
 }) {
   const open = expandedPaths.has(node.fullPath);
@@ -722,10 +731,12 @@ function TreeNode({
       // view). The chevron handles expand/collapse instead, so this matches
       // a typical file-manager: row click = open, chevron = peek.
       onNavigate?.(node.fullPath);
+    } else if (onOpenImage && isImagePath(node.name)) {
+      onOpenImage(node.fullPath, node.name);
     } else {
       onOpenFile(node.fullPath, node.name);
     }
-  }, [node.fullPath, node.isDir, node.name, onNavigate, onOpenFile, onToggleSelected]);
+  }, [node.fullPath, node.isDir, node.name, onNavigate, onOpenFile, onOpenImage, onToggleSelected]);
 
   const handleChevronClick = useCallback((event: React.MouseEvent) => {
     event.stopPropagation();
@@ -1169,6 +1180,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   // Schliessen des einen den anderen ungefragt mitreissen.
   const [toolbarTransfer, setToolbarTransfer] = useState<"copy" | "move" | null>(null);
   const [propertiesTarget, setPropertiesTarget] = useState<SelectionEntry | null>(null);
+  // Grosse Bildvorschau. Eine Datei im Ziel reicht, solange keine Serie
+  // geoeffnet wurde; dann liefert der Dialog onNext/onPrev selbst.
+  const [imagePreview, setImagePreview] = useState<{ path: string; name: string } | null>(null);
   const [actionNotice, setActionNotice] = useState<FileActionNotice | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevCwdRef = useRef<string | null>(null);
@@ -1257,6 +1271,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
   const clearSelection = useCallback(() => {
     setSelection(new Map());
+  }, []);
+
+  const openImagePreview = useCallback((filePath: string, name: string) => {
+    setImagePreview({ path: filePath, name });
   }, []);
 
   const handleMutated = useCallback(() => {
@@ -1735,6 +1753,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                   changedDirectoryPaths={changedDirectoryPaths}
                   selectedPaths={selectedPaths}
                   onToggleSelected={handleToggleSelected}
+                  onOpenImage={openImagePreview}
                   t={t}
                 />
               ))}
@@ -1754,6 +1773,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           onClose={closeContextMenu}
           onMutated={handleMutated}
           onNotify={handleActionNotice}
+          onOpenImage={openImagePreview}
         />
       )}
       {toolbarTransfer && selection.size > 0 && (
@@ -1772,6 +1792,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       )}
       {propertiesTarget && (
         <PropertiesDialog target={propertiesTarget} onClose={() => setPropertiesTarget(null)} t={t} />
+      )}
+      {imagePreview && (
+        <FileImagePreview
+          open
+          filePath={imagePreview.path}
+          fileName={imagePreview.name}
+          onClose={() => setImagePreview(null)}
+        />
       )}
       {actionNotice && (
         <FileActionToast notice={actionNotice} onDismiss={() => setActionNotice(null)} />
