@@ -1579,6 +1579,40 @@ span.linenumber {
 .panel-resize-handle.is-resizing::after {
   background: color-mix(in srgb, var(--text-muted) 70%, var(--border));
 }
+
+/*
+ * Trennlinie, waehrend ein Overlay ueber der Seite liegt.
+ *
+ * Sie liegt zwar unter dem Backdrop des Fensters und wird von diesem ohne
+ *hin verdeckt — der Explorer-Schalter in der Seitenleiste meldet seinen
+ * Zustand aber trotzdem hierher, und der Grund ist der unschaerfe Hintergrund:
+ * `backdrop-filter: blur(8px)` auf dem Backdrop zeichnet die Seite darunter
+ * weich, eine Trennlinie schimmert darin als heller Strich durch. Wer sie
+ * sieht, zieht sie — und veraendert die Seitenbreite, waehrend er eigentlich
+ * im Fenster arbeitet. Eine Trennlinie, die man sieht und nicht greifen kann,
+ * ist schlimmer als eine unsichtbare, die man auch nicht greifen kann.
+ *
+ * `visibility: hidden` und nicht `opacity: 0`: es geht nicht nur um die
+ * gezeichnete Linie, sondern um das Element selbst. Mit `opacity: 0` bliebe der
+ * Trenner im Layout, liefe im Fokuspfad des Tastaturbedieners mit und waere
+ * weiterhin ein `role="separator"` mit `aria-valuenow` — also genau der
+ * Bediengriff, der hier aus dem Weg muss. `visibility: hidden` nimmt ihn aus
+ * der Fokusreihenfolge und aus der Trefferpruefung, ohne den Platz zu
+ * veraendern: die Breite der Seitenleiste richtet sich nach
+ * `sidebarResizer.width`, nicht nach der Anwesenheit des Trenners, das Layout
+ * springt also nicht.
+ *
+ * Das `!important` ist nicht uebertrieben: `pointer-events: none` gewinnt
+ * sonst gegen nichts, aber die Eigenschaften hier sollen sich auch dann
+ * durchsetzen, wenn `.panel-resize-handle` (globals.css) spaeter einmal
+ * ergaenzt wird. Die Breite bleibt bewusst unberuehrt, damit die
+ * Seitenbreite waehrend des Fensters unveraendert bleibt.
+ */
+.overlay-blocked-resizer {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 .right-panel-overlay-backdrop {
   display: none;
 }
@@ -1697,6 +1731,14 @@ span.linenumber {
     width: 280px;
     max-width: 85vw;
     height: var(--app-viewport-height, 100dvh);
+    /* Nur hier, nur auf dem Telefon. Die Seitenleiste liegt dann ueber ihrem
+     * eigenen Backdrop (`sidebar-overlay-backdrop`, 199) und muss ihn
+     * ueberdecken. Auf dem Desktop traegt sie bewusst KEIN z-index: dort
+     * wuerde die Kombination aus `position` und `z-index` einen
+     * Stapelkontext erzeugen und jedes feste Element darin — vor allem das
+     * grosse Explorer-Fenster (1300) — einschliessen. Siehe die Erklaerung am
+     * Aufruf in `AppShell.tsx`. */
+    z-index: 200;
     transition: transform 0.25s ease, box-shadow 0.25s ease;
   }
   .sidebar-container.sidebar-open {

@@ -83,6 +83,12 @@ interface Props {
   onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" | "edit" }) => void;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
+  /**
+   * Meldet, ob der Explorer der Seitenleiste gerade im grossen Fenster offen
+   * ist. `AppShell` braucht das fuer seine Resizer-Trennlinien, die waehrend
+   * des Fensters weder sichtbar sein noch bedienbar duerfen.
+   */
+  onExplorerPopupOpenChange?: (open: boolean) => void;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
   onAtMentions?: (relativePaths: string[]) => void;
   /** Fired when a session that is not currently selected finishes running.
@@ -435,7 +441,7 @@ function PiWebTitle() {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone }: Props) {
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onExplorerRefresh, onExplorerPopupOpenChange, onAtMention, onAtMentions, onBackgroundTaskDone }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const sessionsForDisplay = optimisticSession && !allSessions.some((session) => session.id === optimisticSession.id)
@@ -1838,6 +1844,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 }}
                 changesCollapsed={changesCollapsed}
                 onChangesCountChange={setChangesCount}
+                onPopupOpenChange={onExplorerPopupOpenChange}
               />
             </div>
           )}

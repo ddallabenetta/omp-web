@@ -127,6 +127,18 @@ interface Props {
    * gibt es dort nicht.
    */
   imageTarget?: "preview" | "openFile";
+  /**
+   * Meldet, ob das grosse Fenster offen ist. Die Instanz in der Seitenleiste
+   * braucht das fuer ihre Resizer: waehrend das Fenster ueber der Seite liegt,
+   * duerfen die Trennlinien der Seitenleiste weder sichtbar sein noch
+   * bedienbar, sonst aendert der Nutzer beim Zielen auf das Fenster die
+   * Seitenbreite.
+   *
+   * Ein Kanal und kein gemeinsamer Zustand: `FileExplorerWindow` lebt im
+   * Zustand dieser Instanz (`popupOpen`), und der Zustand, der die Seitenleiste
+   * betrifft, liegt in `AppShell`. Ein Kanal haelt die beiden getrennt.
+   */
+  onPopupOpenChange?: (open: boolean) => void;
 }
 
 export interface FileExplorerHandle {
@@ -1824,6 +1836,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   onChangesCountChange,
   initialViewState,
   onViewStateChange,
+  onPopupOpenChange,
   allowPopup = true,
   imageTarget = "preview",
 }, ref) {
@@ -2019,6 +2032,22 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const openPopup = useCallback(() => {
     setPopupOpen(true);
   }, []);
+
+  // Meldet den Zustand des Fensters nach aussen. Der Effekt haengt an
+  // `popupOpen` selbst, nicht am Callback: die aufrufende Instanz gibt bei
+  // jedem Rendern eine neue Pfeilfunktion, und haenge er daran, riefe er in
+  // jedem Rendern zurueck — bei einer Meldung, die zurueck in den Zustand der
+  // aufrufenden Instanz schreibt, waere das eine Endlosschleife.
+  useEffect(() => {
+    onPopupOpenChange?.(popupOpen);
+  }, [popupOpen, onPopupOpenChange]);
+
+  // Meldet `false`, wenn diese Instanz verschwindet, ohne dass das Fenster
+  // geschlossen wurde — etwa weil die Seitenleiste den Explorer einklappt oder
+  // das Arbeitsverzeichnis wechselt. Ohne diese Meldung bliebe der Zustand der
+  // aufrufenden Seite dauerhaft auf "Fenster offen" stehen und die Trennlinien
+  // der Seite blieben unsichtbar und tot, obwohl gar kein Fenster mehr da ist.
+  useEffect(() => () => { onPopupOpenChange?.(false); }, [onPopupOpenChange]);
 
   const handleMutated = useCallback(() => {
     setTreeRefreshKey((key) => key + 1);

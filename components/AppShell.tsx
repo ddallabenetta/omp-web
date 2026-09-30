@@ -94,6 +94,22 @@ export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
+  // Ist das grosse Explorer-Fenster offen? Gemeldet von dem Explorer in der
+  // Seitenleiste, nicht von diesem Baum: der Explorer ist eine Komponente in
+  // `SessionSidebar` und haelt den Zustand des Fensters in sich. Solange das
+  // Fenster offen ist, bekommen die beiden Resizer-Trennlinien die Klasse
+  // `overlay-blocked-resizer` — unsichtbar und nicht bedienbar. Sie liegen
+  // zwar jetzt unter dem Backdrop, aber eine Trennlinie, die man im
+  // unscharfen Bild sieht, fordert zum Ziehen ein, und der Griff gehoert dann
+  // nicht zu dem, was man sieht.
+  const [explorerWindowOpen, setExplorerWindowOpen] = useState(false);
+  // Stabil ueber die Renderings hinweg: der Melder haengt an diesem
+  // Callback, nicht am Zustand. Sonst gaeue jeder neue Callback einen neuen
+  // Effekt und damit in jedem Rendern eine weitere Meldung zurueck an die
+  // Seite, die darauf ihren Zustand setzt.
+  const handleExplorerPopupOpenChange = useCallback((open: boolean) => {
+    setExplorerWindowOpen((prev) => (prev === open ? prev : open));
+  }, []);
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
   const rightPanelWidthRef = useRef(RIGHT_PANEL_FALLBACK_WIDTH);
   const getResponsiveRightPanelWidth = useCallback(
@@ -826,6 +842,7 @@ export function AppShell() {
         onOpenFile={handleOpenFile}
         explorerRefreshKey={explorerRefreshKey}
         onExplorerRefresh={handleExplorerRefresh}
+        onExplorerPopupOpenChange={handleExplorerPopupOpenChange}
         onAtMention={handleAtMention}
         onAtMentions={handleAtMentions}
         onBackgroundTaskDone={handleBackgroundTaskDone}
@@ -967,7 +984,21 @@ export function AppShell() {
           flexShrink: 0,
           paddingTop: "env(safe-area-inset-top)",
           paddingBottom: "env(safe-area-inset-bottom)",
-          zIndex: 200,
+          /* KEIN z-index hier. Die Seitenleiste trage auf dem Desktop keines,
+           * und das ist Absicht, nicht Versehen: `position: relative` kommt aus
+           * `.sidebar-container` (globals.css, `@media (min-width: 641px)`),
+           * und `position` + `z-index` wuerden zusammen einen Stapelkontext
+           * erzeugen. Alles, was im Explorer der Seitenleiste liegt — auch
+           * `position: fixed` — bliebe darin gefangen, auch wenn es selbst
+           * `z-index: 1300` traegt. Genau daran ist das grosse Explorer-Fenster
+           * gescheitert: es steckt im Explorer der Seitenleiste, sein Backdrop
+           * (1300) wurde gegen den Resizer (220) gerechnet und verlor, weil
+           * beide nie in derselben Stapelebene lagen. Ohne `z-index` hat die
+           * Seitenleiste auf dem Desktop keinen Stapelkontext, das Fenster
+           * zaehlt wieder gegen die ganze Seite — und der Resizer liegt wieder
+           * darunter. Auf dem Telefon traegt `.sidebar-container` das
+           * `z-index: 200` im zugehoerigen Media-Query, weil es dort ueber
+           * seinem eigenen Backdrop (199) liegen muss. */
         } as React.CSSProperties}
       >
         {sidebarContent}
@@ -976,7 +1007,7 @@ export function AppShell() {
         <div
           {...sidebarResizer.separatorProps}
           aria-controls="session-sidebar"
-          className={`panel-resize-handle sidebar-resize-handle${sidebarResizer.isResizing ? " is-resizing" : ""}`}
+          className={`panel-resize-handle sidebar-resize-handle${sidebarResizer.isResizing ? " is-resizing" : ""}${explorerWindowOpen ? " overlay-blocked-resizer" : ""}`}
           data-resize-handle="sidebar"
           title={`${translate("layout.resizeSidebar")}: ${translate("layout.resizeHint")}`}
         />
@@ -1754,7 +1785,7 @@ export function AppShell() {
         <div
           {...rightPanelResizer.separatorProps}
           aria-controls="file-panel"
-          className={`panel-resize-handle right-panel-resize-handle${rightPanelResizer.isResizing ? " is-resizing" : ""}`}
+          className={`panel-resize-handle right-panel-resize-handle${rightPanelResizer.isResizing ? " is-resizing" : ""}${explorerWindowOpen ? " overlay-blocked-resizer" : ""}`}
           data-resize-handle="right-panel"
           title={`${translate("layout.resizeFilePanel")}: ${translate("layout.resizeHint")}`}
         />
