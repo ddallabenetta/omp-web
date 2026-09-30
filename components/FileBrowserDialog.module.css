@@ -154,6 +154,185 @@
   margin-right: 4px;
 }
 
+/* ---- Werkzeugleiste: Sortierung und Ansichtsmodus ---- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 11px var(--font-mono);
+}
+
+.sortButton:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.sortButton:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.sortGlyph {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition: transform 160ms ease;
+}
+
+.viewToggle {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.viewButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.viewButton:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.viewButton:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.viewButton:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.viewButtonActive {
+  border-color: var(--border);
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+/* ---- Raster ---- */
+
+.grid {
+  flex: 1;
+  min-height: 0;
+  padding: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Die Leinwand traegt nur die Gesamthoehe; die Kacheln darin sind absolut
+ * positioniert, damit das Fenster ueber `top` gesteuert werden kann. */
+.gridCanvas {
+  position: relative;
+  width: 100%;
+}
+
+.tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  height: var(--tile-height, 118px);
+  padding: 7px 4px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: center;
+}
+
+.tile:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.tile:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.tileSelected {
+  background: var(--bg-selected);
+}
+
+.tileActive {
+  border-color: var(--accent);
+}
+
+.tileFile {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.thumbnailBox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 68px;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.thumbnailHolder {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.thumbnail {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.tileName {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  font: 10px/1.35 var(--font-mono);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 /* ---- Listing ---- */
 
 .list {
@@ -198,6 +377,13 @@
  * --bg-selected, damit "wo bin ich" nicht nur ueber den Fokusring lesbar ist. */
 .entry[data-active="true"] {
   background: var(--bg-selected);
+}
+
+/* Mit `allowFiles` sind Dateien echte Ziele; die Auswahl des Aufrufers bleibt
+ * deshalb auch dann sichtbar, wenn der Zeiger den Eintrag gerade verlassen hat. */
+.entrySelected {
+  background: var(--bg-selected);
+  color: var(--text);
 }
 
 .entryName {

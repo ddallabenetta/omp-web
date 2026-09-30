@@ -4,7 +4,11 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import styles from "./FileBrowserDialog.module.css";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { encodeFilePathForApi, getFileDirectory, joinFilePath, normalizeFilePathSlashes } from "@/lib/file-paths";
+import { isImagePath } from "@/lib/file-types";
 import { useI18n } from "@/hooks/useI18n";
+
+export type FileBrowserView = "list" | "grid";
+export type FileBrowserSortDirection = "asc" | "desc";
 
 export interface FileBrowserDialogProps {
   /** true rendert Backdrop und Panel, false rendert gar nichts. */
@@ -20,6 +24,25 @@ export interface FileBrowserDialogProps {
   onCancel: () => void;
   /** Bekommt den absoluten Pfad des aktuell angezeigten Ordners. */
   onConfirm: (destinationDir: string) => void;
+  /**
+   * Ansichtsmodus. Ohne diese Prop gewaehlt der Dialog selbst: Raster, wenn
+   * `allowFiles` gesetzt ist, sonst Liste. Mit `Prop` ist der Zustand kontrolliert
+   * und die Umschalt-Leiste wird nur dann gezeigt, wenn zusaetzlich
+   * `onViewChange` uebergeben ist.
+   */
+  view?: FileBrowserView;
+  /** Wird beim Umschalten der Ansicht aufgerufen. Ohne diese Prop erscheint keine Umschalt-Leiste. */
+  onViewChange?: (view: FileBrowserView) => void;
+  /**
+   * Macht Dateien auswaehlbar. Ohne diese Prop bleiben Dateien bewusst
+   * nicht-interaktive, ausgegraute Zeilen — nur Ordner koennen Ziel eines Copy
+   * oder Move sein.
+   */
+  allowFiles?: boolean;
+  /** Bekommt den absoluten Pfad einer angeklickten Datei; nur mit `allowFiles`. */
+  onSelectFile?: (filePath: string) => void;
+  /** Absoluter Pfad der gerade ausgewaehlten Datei; nur mit `allowFiles`. */
+  selectedFile?: string | null;
 }
 
 interface DirectoryEntry {
@@ -29,9 +52,26 @@ interface DirectoryEntry {
 
 interface ListRow {
   entry: DirectoryEntry;
-  /** Laufende Nummer des Ordners, null fuer Dateien. */
-  directoryIndex: number | null;
+  /**
+   * Laufende Nummer in der navigierbaren Reihenfolge, null fuer nicht
+   * navigierbare Zeilen (Dateien ohne `allowFiles`).
+   */
+  navigableIndex: number | null;
 }
+
+/** Kachelmasse im Rastermodus. Ein CSS-Custom-Property haelt CSS und Rechnung synchron. */
+const GRID_TILE_MIN_WIDTH = 108;
+const GRID_TILE_HEIGHT = 118;
+const GRID_GAP = 6;
+/** Zusaetzlich gerenderte Reihen ueber und unter dem Sichtfenster. */
+const GRID_OVERSCAN_ROWS = 2;
+/** Reihen, die auch ohne gemessene Buehnenhoehe gerendert werden. */
+const GRID_MIN_RENDER_ROWS = 8;
+/** Vorabladen der Thumbnails, bevor die Kachel wirklich sichtbar wird. */
+const THUMBNAIL_ROOT_MARGIN = "240px";
+
+/** Sortierung laeuft ueber `localeCompare`; ein Collator pro Sortiervorgang waere bei 5000 Eintraegen messbar. */
+const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 /**
  * Verzeichnislisting fuer die Zielordner-Auswahl. Dieselbe Route wie der
@@ -77,6 +117,169 @@ function pathCrumbs(path: string): Array<{ name: string; fullPath: string }> {
 }
 
 /**
+ * Reihenfolge der Eintraege: Verzeichnisse bleiben immer oben, innerhalb der
+ * Gruppen entscheidet die Sortierrichtung. Das ist Nautilus-Verhalten und
+ * zugleich die Grundlage fuer die laufende Nummer der navigierbaren Zeilen.
+ */
+function sortEntries(entries: DirectoryEntry[], direction: FileBrowserSortDirection): DirectoryEntry[] {
+  const sign = direction === "asc" ? 1 : -1;
+  return [...entries].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return sign * NAME_COLLATOR.compare(a.name, b.name);
+  });
+}
+
+/** Spaltenzahl des Rasters aus der gemessenen Containerbreite. */
+function gridColumnCount(containerWidth: number): number {
+  if (containerWidth <= 0) return 1;
+  return Math.max(1, Math.floor((containerWidth + GRID_GAP) / (GRID_TILE_MIN_WIDTH + GRID_GAP)));
+}
+
+/** Bild-URL fuer eine Kachel. `type=read` ist der Zweig, der Bildbytes liefert. */
+function imageThumbnailUrl(directory: string, name: string): string {
+  return `/api/files/${encodeFilePathForApi(joinFilePath(directory, name))}?type=read`;
+}
+
+/**
+ * Bildkachel mit gestaffeltem Ladebeginn.
+ *
+ * `src` wird erst gesetzt, wenn die Kachel in die Naehe des Sichtfensters
+ * scrolled — der Beobachter meldet sie, lange bevor sie sichtbar ist, damit das
+ * Bild beim Scrollen schon da ist. Ohne `IntersectionObserver` (etwa im
+ * Wegwerf-Harness) laden die Kacheln sofort: dann entscheidet allein der
+ * Virtualisierer, wie viele es ueberhaupt sind.
+ *
+ * Ein Beobachter je Kachel ist hier vertretbar, weil die Virtualisierung die
+ * Zahl der *montierten* Kacheln begrenzt — bei 5000 Dateien sind das die
+ * wenigen Dutzend des Sichtfensters, nicht 5000.
+ */
+function LazyThumbnail({ src, alt, useObserver }: { src: string; alt: string; useObserver: boolean }) {
+  const holderRef = useRef<HTMLSpanElement>(null);
+  const [inView, setInView] = useState(!useObserver);
+
+  useEffect(() => {
+    if (!useObserver) return;
+    const holder = holderRef.current;
+    if (!holder) return;
+    const observer = new IntersectionObserver(
+      (observations) => {
+        if (observations.some((observation) => observation.isIntersecting)) setInView(true);
+      },
+      { rootMargin: THUMBNAIL_ROOT_MARGIN },
+    );
+    observer.observe(holder);
+    return () => observer.disconnect();
+  }, [useObserver]);
+
+  return (
+    <span ref={holderRef} className={styles.thumbnailHolder}>
+      {inView && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className={styles.thumbnail} src={src} alt={alt} loading="lazy" decoding="async" draggable={false} />
+      )}
+    </span>
+  );
+}
+
+interface GridTileProps {
+  entry: DirectoryEntry;
+  selected: boolean;
+  active: boolean;
+  fullPath: string;
+  directory: string;
+  selectable: boolean;
+  onOpen: (path: string) => void;
+  onSelect: (path: string) => void;
+  /** false erzwingt sofortiges Laden, wenn kein `IntersectionObserver` existiert. */
+  useObserver: boolean;
+  left: number;
+  top: number;
+  width: number;
+}
+
+/** Eine Rasterkachel: Bildvorschau bei Bildern, Dateisymbol bei allem anderen. */
+function GridTile({
+  entry,
+  selected,
+  active,
+  fullPath,
+  directory,
+  selectable,
+  onOpen,
+  onSelect,
+  useObserver,
+  left,
+  top,
+  width,
+}: GridTileProps) {
+  const isDirectory = entry.isDir;
+  const thumb = !isDirectory && isImagePath(entry.name);
+  const content = (
+    <>
+      <span className={styles.thumbnailBox}>
+        {thumb
+          ? <LazyThumbnail src={imageThumbnailUrl(directory, entry.name)} alt={entry.name} useObserver={useObserver} />
+          : isDirectory ? <FolderIcon size={30} /> : getFileIcon(entry.name, 30)}
+      </span>
+      <span className={styles.tileName}>{entry.name}</span>
+    </>
+  );
+  const position = { left, top, width };
+  const className = [
+    styles.tile,
+    isDirectory ? styles.tileDirectory : styles.tileFile,
+    selected ? styles.tileSelected : "",
+    active ? styles.tileActive : "",
+  ].filter(Boolean).join(" ");
+
+  if (isDirectory) {
+    return (
+      <button
+        type="button"
+        className={`omp-press ${className}`}
+        style={position}
+        data-active={active}
+       
+        onClick={() => onOpen(fullPath)}
+        title={entry.name}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  if (!selectable) {
+    // Ohne `allowFiles` bleibt die Datei - wie in der Liste - sichtbar, aber
+    // nicht bedienbar; der Nutzer soll sehen, dass sie da ist.
+    return (
+      <div
+        className={className}
+        style={position}
+        aria-disabled="true"
+        title={entry.name}
+       
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={`omp-press ${className}`}
+      style={position}
+      data-active={active}
+     
+      onClick={() => onSelect(fullPath)}
+      title={entry.name}
+    >
+      {content}
+    </button>
+  );
+}
+
+/**
  * Zentriertes Datei-Browser-Panel zur Auswahl eines Zielordners, etwa fuer
  * Copy/Move-Aktionen aus dem Explorer-Kontextmenue.
  *
@@ -87,7 +290,13 @@ function pathCrumbs(path: string): Array<{ name: string; fullPath: string }> {
  * Dateien werden sichtbar, aber nicht auswaehlbar gerendert: nur Ordner koennen
  * Ziel eines Copy oder Move sein, und eine sichtbare deaktivierte Zeile
  * erklaert dem Nutzer, warum der Ordner daneben funktioniert und sie nicht —
- * ein Verstecken wuerde wie ein Auswahlfehler wirken.
+ * ein Verstecken wuerde wie ein Auswahlfehler wirken. Erst `allowFiles` macht
+ * aus den Zeilen oder Kacheln echte Ziele.
+ *
+ * Sortierung und Ansichtsmodus sind lokaler Darstellungszustand. Der
+ * Rastermodus ist fensterweise gerendert (siehe `visibleRange`): ohne das
+ * haetten 5000 Dateien 5000 Kacheln im DOM und davon so viele Thumbnail-
+ * Requests, wie Bilder darunter sind.
  */
 export function FileBrowserDialog({
   open,
@@ -97,6 +306,11 @@ export function FileBrowserDialog({
   busy = false,
   onCancel,
   onConfirm,
+  view,
+  onViewChange,
+  allowFiles = false,
+  onSelectFile,
+  selectedFile = null,
 }: FileBrowserDialogProps) {
   const { t } = useI18n();
   const [currentPath, setCurrentPath] = useState(() => trimTrailingSlash(initialPath));
@@ -105,21 +319,35 @@ export function FileBrowserDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<FileBrowserSortDirection>("asc");
+  const [uncontrolledView, setUncontrolledView] = useState<FileBrowserView>(() => allowFiles ? "grid" : "list");
+  const [gridScrollTop, setGridScrollTop] = useState(0);
+  const [gridViewport, setGridViewport] = useState<{ width: number; height: number } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const requestIdRef = useRef(0);
   const titleId = useId();
 
-  // Ordner sind die einzigen navigierbaren Zeilen. Der Index wird hier einmal
-  // berechnet, damit Tastaturnavigation und Hervorhebung dieselbe Nummer
-  // benutzen und die Liste nicht pro Zeile neu durchsucht werden muss.
-  const { rows, directoryCount } = useMemo((): { rows: ListRow[]; directoryCount: number } => {
+  const activeView: FileBrowserView = view ?? uncontrolledView;
+
+  // Ohne `IntersectionObserver` laden Thumbnails sofort; der Virtualisierer
+  // begrenzt die Zahl der Kacheln dann allein.
+  const useThumbnailObserver = typeof IntersectionObserver !== "undefined";
+
+  // Ordner sind die einzigen navigierbaren Zeilen; mit `allowFiles` kommen die
+  // Dateien dazu. Der Index wird hier einmal berechnet, damit
+  // Tastaturnavigation und Hervorhebung dieselbe Nummer benutzen und die Liste
+  // nicht pro Zeile neu durchsucht werden muss.
+  const sortedEntries = useMemo(() => sortEntries(entries, sortDirection), [entries, sortDirection]);
+  const { rows, navigableCount } = useMemo((): { rows: ListRow[]; navigableCount: number } => {
     let count = 0;
-    const mapped: ListRow[] = entries.map((entry) => (
-      entry.isDir ? { entry, directoryIndex: count++ } : { entry, directoryIndex: null }
-    ));
-    return { rows: mapped, directoryCount: count };
-  }, [entries]);
+    const mapped: ListRow[] = sortedEntries.map((entry) => {
+      const navigable = entry.isDir || allowFiles;
+      return { entry, navigableIndex: navigable ? count++ : null };
+    });
+    return { rows: mapped, navigableCount: count };
+  }, [allowFiles, sortedEntries]);
 
   const navigateTo = useCallback((path: string) => {
     const target = trimTrailingSlash(path);
@@ -131,6 +359,7 @@ export function FileBrowserDialog({
     setActiveIndex(-1);
     setLoadError(null);
     setDismissedError(null);
+    setGridScrollTop(0);
     setLoading(true);
     void fetchDirectory(target)
       .then((next) => {
@@ -175,9 +404,27 @@ export function FileBrowserDialog({
   // Aktiven Listeneintrag mit im Sichtbereich halten, sonst ist der letzte
   // Ordner einer langen Liste nur mit der Maus erreichbar.
   useEffect(() => {
-    if (!open || activeIndex < 0) return;
+    if (!open || activeIndex < 0 || activeView !== "list") return;
     listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex, open]);
+  }, [activeIndex, activeView, open]);
+
+  // Buehnengroesse des Rasters: ohne sie laesst sich das Sichtfenster nicht
+  // berechnen. `ResizeObserver` fehlt in aelteren Umgebungen, dann genuegt die
+  // Breite aus dem ersten Layout.
+  useEffect(() => {
+    if (!open || activeView !== "grid") return;
+    const grid = gridRef.current;
+    if (!grid) return;
+    const measure = () => {
+      const box = grid.getBoundingClientRect();
+      setGridViewport({ width: box.width, height: box.height });
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [activeView, open]);
 
   if (!open) return null;
 
@@ -189,14 +436,17 @@ export function FileBrowserDialog({
   const canConfirm = !loading && !busy && loadError === null;
 
   const enterDirectory = (index: number) => {
-    if (index < 0 || index >= directoryCount) return;
-    const row = rows.find((candidate) => candidate.directoryIndex === index);
-    if (row) navigateTo(joinFilePath(currentPath, row.entry.name));
+    if (index < 0 || index >= navigableCount) return;
+    const row = rows.find((candidate) => candidate.navigableIndex === index);
+    if (!row) return;
+    const fullPath = joinFilePath(currentPath, row.entry.name);
+    if (row.entry.isDir) navigateTo(fullPath);
+    else onSelectFile?.(fullPath);
   };
 
   const moveActive = (direction: 1 | -1) => {
-    if (directoryCount === 0) return;
-    setActiveIndex((previous) => (previous + direction + directoryCount) % directoryCount);
+    if (navigableCount === 0) return;
+    setActiveIndex((previous) => (previous + direction + navigableCount) % navigableCount);
   };
 
   const handleListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -219,6 +469,36 @@ export function FileBrowserDialog({
   };
 
   const crumbs = pathCrumbs(currentPath);
+
+  const toggleView = () => {
+    if (!onViewChange) return;
+    const next: FileBrowserView = activeView === "list" ? "grid" : "list";
+    if (view === undefined) setUncontrolledView(next);
+    onViewChange(next);
+  };
+
+  const columns = gridColumnCount(gridViewport?.width ?? 0);
+  const tileWidth = gridViewport && gridViewport.width > 0
+    ? (gridViewport.width - GRID_GAP * (columns - 1)) / columns
+    : GRID_TILE_MIN_WIDTH;
+  const rowCount = Math.ceil(rows.length / columns);
+  // Ohne gemessene Buehnenhoehe (erstes Layout, nicht gerenderter Zustand)
+  // wird ein Mindestfenster gerendert, damit das Raster nie leer erscheint.
+  const visibleRowCount = Math.max(
+    GRID_MIN_RENDER_ROWS,
+    Math.ceil((gridViewport?.height ?? 0) / (GRID_TILE_HEIGHT + GRID_GAP)) + GRID_OVERSCAN_ROWS * 2,
+  );
+  const firstRow = Math.max(0, Math.floor(gridScrollTop / (GRID_TILE_HEIGHT + GRID_GAP)) - GRID_OVERSCAN_ROWS);
+  const lastRow = Math.min(rowCount, firstRow + visibleRowCount);
+  const firstIndex = firstRow * columns;
+  const lastIndex = Math.min(rows.length, lastRow * columns);
+  const visibleRows = rows.slice(firstIndex, lastIndex);
+  const canvasHeight = rowCount === 0 ? 0 : rowCount * GRID_TILE_HEIGHT + (rowCount - 1) * GRID_GAP;
+  const canvasStyle = {
+    "--tile-width": `${tileWidth}px`,
+    "--tile-height": `${GRID_TILE_HEIGHT}px`,
+    "--grid-gap": `${GRID_GAP}px`,
+  } as React.CSSProperties;
 
   return (
     <div
@@ -290,41 +570,156 @@ export function FileBrowserDialog({
           })}
         </div>
 
-        <div ref={listRef} className={styles.list} role="listbox" aria-label={t("fileBrowser.currentFolder")}>
-          {loading ? (
-            <div className={styles.state}>{t("fileBrowser.loading")}</div>
-          ) : rows.length === 0 ? (
-            <div className={styles.state}>{t("fileBrowser.emptyFolder")}</div>
-          ) : (
-            rows.map(({ entry, directoryIndex }) => {
-              if (directoryIndex === null) {
-                return (
-                  <div key={entry.name} className={`${styles.entry} ${styles.fileRow}`} aria-disabled="true">
-                    {getFileIcon(entry.name, 13)}
-                    <span className={styles.entryName}>{entry.name}</span>
-                  </div>
-                );
-              }
-              return (
-                <button
-                  key={entry.name}
-                  type="button"
-                  className={`omp-press ${styles.entry}`}
-                  data-active={directoryIndex === activeIndex}
-                  onClick={() => navigateTo(joinFilePath(currentPath, entry.name))}
-                  onMouseEnter={() => setActiveIndex(directoryIndex)}
-                  title={entry.name}
-                >
-                  <FolderIcon size={13} />
-                  <span className={styles.entryName}>{entry.name}</span>
-                  <svg className={styles.entryArrow} viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m9 18 6-6-6-6" />
-                  </svg>
-                </button>
-              );
-            })
+        <div className={styles.toolbar}>
+          <button
+            type="button"
+            className={`omp-press ${styles.sortButton}`}
+            onClick={() => setSortDirection((previous) => previous === "asc" ? "desc" : "asc")}
+            title={t("fileBrowser.sortByName")}
+           
+            aria-label={t("fileBrowser.sortByName")}
+          >
+            {t("fileBrowser.name")}
+            <svg
+              className={styles.sortGlyph}
+              data-direction={sortDirection}
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              {sortDirection === "asc" ? <path d="m6 15 6-6 6 6" /> : <path d="m6 9 6 6 6-6" />}
+            </svg>
+          </button>
+          {onViewChange && (
+            <div className={styles.viewToggle} role="group" aria-label={t("fileBrowser.viewMode")}>
+              <button
+                type="button"
+                className={`omp-press-tint ${styles.viewButton} ${activeView === "list" ? styles.viewButtonActive : ""}`}
+                onClick={() => activeView !== "list" && toggleView()}
+                disabled={activeView === "list"}
+                title={t("fileBrowser.viewList")}
+                aria-pressed={activeView === "list"}
+               
+              >
+                <svg className={styles.iconGlyph} viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`omp-press-tint ${styles.viewButton} ${activeView === "grid" ? styles.viewButtonActive : ""}`}
+                onClick={() => activeView !== "grid" && toggleView()}
+                disabled={activeView === "grid"}
+                title={t("fileBrowser.viewGrid")}
+                aria-pressed={activeView === "grid"}
+               
+              >
+                <svg className={styles.iconGlyph} viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" />
+                </svg>
+              </button>
+            </div>
           )}
         </div>
+
+        {activeView === "list" ? (
+          <div ref={listRef} className={styles.list} role="listbox" aria-label={t("fileBrowser.currentFolder")}>
+            {loading ? (
+              <div className={styles.state}>{t("fileBrowser.loading")}</div>
+            ) : rows.length === 0 ? (
+              <div className={styles.state}>{t("fileBrowser.emptyFolder")}</div>
+            ) : (
+              rows.map(({ entry, navigableIndex }) => {
+                if (navigableIndex === null) {
+                  return (
+                    <div key={entry.name} className={`${styles.entry} ${styles.fileRow}`} aria-disabled="true">
+                      {getFileIcon(entry.name, 13)}
+                      <span className={styles.entryName}>{entry.name}</span>
+                    </div>
+                  );
+                }
+                const fullPath = joinFilePath(currentPath, entry.name);
+                if (!entry.isDir) {
+                  return (
+                    <button
+                      key={entry.name}
+                      type="button"
+                      className={`omp-press ${styles.entry} ${styles.fileRow} ${selectedFile === fullPath ? styles.entrySelected : ""}`}
+                      data-active={navigableIndex === activeIndex}
+                      onClick={() => onSelectFile?.(fullPath)}
+                      onMouseEnter={() => setActiveIndex(navigableIndex)}
+                      title={entry.name}
+                     
+                    >
+                      {getFileIcon(entry.name, 13)}
+                      <span className={styles.entryName}>{entry.name}</span>
+                    </button>
+                  );
+                }
+                return (
+                  <button
+                    key={entry.name}
+                    type="button"
+                    className={`omp-press ${styles.entry}`}
+                    data-active={navigableIndex === activeIndex}
+                    onClick={() => navigateTo(fullPath)}
+                    onMouseEnter={() => setActiveIndex(navigableIndex)}
+                    title={entry.name}
+                   
+                  >
+                    <FolderIcon size={13} />
+                    <span className={styles.entryName}>{entry.name}</span>
+                    <svg className={styles.entryArrow} viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m9 18 6-6-6-6" />
+                    </svg>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        ) : (
+          <div
+            ref={gridRef}
+            className={styles.grid}
+            role="listbox"
+            aria-label={t("fileBrowser.currentFolder")}
+           
+            onScroll={(event) => setGridScrollTop(event.currentTarget.scrollTop)}
+          >
+            {loading ? (
+              <div className={styles.state}>{t("fileBrowser.loading")}</div>
+            ) : rows.length === 0 ? (
+              <div className={styles.state}>{t("fileBrowser.emptyFolder")}</div>
+            ) : (
+              <div
+                className={styles.gridCanvas}
+                style={{ ...canvasStyle, height: canvasHeight }}
+               
+              >
+                {visibleRows.map(({ entry, navigableIndex }, offset) => {
+                  const index = firstIndex + offset;
+                  const fullPath = joinFilePath(currentPath, entry.name);
+                  return (
+                    <GridTile
+                      key={entry.name}
+                      entry={entry}
+                      fullPath={fullPath}
+                      directory={currentPath}
+                      selectable={allowFiles}
+                      selected={selectedFile === fullPath}
+                      active={navigableIndex !== null && navigableIndex === activeIndex}
+                      onOpen={navigateTo}
+                      onSelect={(path) => onSelectFile?.(path)}
+                      useObserver={useThumbnailObserver}
+                      left={(index % columns) * (tileWidth + GRID_GAP)}
+                      top={Math.floor(index / columns) * (GRID_TILE_HEIGHT + GRID_GAP)}
+                      width={tileWidth}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {visibleError && (
           <div className={styles.errorRow} role="alert">
