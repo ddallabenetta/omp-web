@@ -4,7 +4,8 @@ import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 import type { SkillInfo, SkillsResponse } from "@/lib/api-types";
 import { annotateSkillsWithInstallInfo } from "@/lib/skill-lock";
 import { getProjectTrustStatus } from "@/lib/project-trust";
-import { getSettingsForCwd } from "@/lib/omp-runtime";
+import { getSettingsForIdentity } from "@/lib/omp-runtime";
+import type { WebIdentity } from "@/lib/request-identity";
 
 /**
  * Skills exactly as an omp session would see them.
@@ -12,10 +13,28 @@ import { getSettingsForCwd } from "@/lib/omp-runtime";
  * `loadSkills` is the same entry point `createAgentSession` uses, so the panel
  * lists `.omp/skills`, `~/.omp/agent/skills`, `.claude/skills`, plugin skills
  * and `.agents/skills` with omp's own precedence and collision warnings.
+ *
+ * ### Lesbar fuer alle, schreibgeschuetzt fuer Nicht-Admin
+ *
+ * Der Skill-*Bestand* bleibt bewusst global: eine `SKILL.md` ist Code, den
+ * alle brauchen, und ein Bestand, den jeder sieht und nur der Betreiber
+ * aendert, ist ein gemeinsamer Bestand mit einem Verantwortlichen. Was hier
+ * nicht passieren darf, ist das andere: dass ein Mandant eine fremde Skill
+ * umschreibt. Diese Grenze zieht `app/api/skills/route.ts` (PATCH), nicht
+ * dieses Modul — dieses Modul **liest**, und Lesen ist der gewollte Teil.
+ *
+ * `identity` geht hier nur in die Lock-Datei (welche Installationen *dieses*
+ * Konto als die eigenen sieht) und in die Settings (welche Skill-Optionen es
+ * hat). Der `agentDir` bleibt fuer die Projekt-Vertrauensabfrage der globale
+ * des Prozesses, denn das Trust-Verzeichnis ist Trust ueber die Konto-Wurzel
+ * hinweg derselbe Vorgang.
  */
-export async function loadSkillsWithInstallInfo(cwd: string): Promise<SkillsResponse> {
+export async function loadSkillsWithInstallInfo(
+  cwd: string,
+  identity: WebIdentity | null,
+): Promise<SkillsResponse> {
   const agentDir = getAgentDir();
-  const settings = await getSettingsForCwd(cwd);
+  const settings = await getSettingsForIdentity(identity, cwd);
   const { skills, warnings } = await loadSkills({ cwd, ...settings.getGroup("skills") });
 
   const infos: SkillInfo[] = skills.map((skill) => ({
@@ -31,7 +50,7 @@ export async function loadSkillsWithInstallInfo(cwd: string): Promise<SkillsResp
   }));
 
   return {
-    skills: annotateSkillsWithInstallInfo(infos, { cwd, agentDir }),
+    skills: annotateSkillsWithInstallInfo(infos, { cwd, agentDir, identity }),
     diagnostics: warnings.map((warning) => ({
       type: "warning" as const,
       message: warning.message,

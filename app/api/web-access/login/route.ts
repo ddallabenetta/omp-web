@@ -1,18 +1,19 @@
 import { NextResponse } from "next/server";
-import { resolveWebAuthPolicy, verifyWebPassword } from "@/bin/web-auth-store.js";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { SESSION_COOKIE_NAME, SESSION_TTL_MS, issueSessionCookie } from "@/lib/web-auth-session";
+import { getExpectedUsername, verifyCredential } from "@/lib/web-auth";
 
 /**
- * Exchange the web password for a session cookie.
+ * Exchange a web password for a session cookie.
  *
  * This is the browser door next to Basic Auth, not a replacement for it: curl,
  * the reverse proxy, and every existing client keep sending `Authorization:
  * Basic`, and `proxy.ts` still accepts that. What a cookie buys is a login page
  * instead of a native auth dialog.
  *
- * The username is fixed at `omp` (see `OMP_WEB_AUTH_USERNAME`), so this route
- * does not accept one.
+ * The username is optional. Omitting it means the configured single-user name,
+ * which is how every existing deployment signs in and why the login page still
+ * comes pre-filled. Supplying one selects an account from `omp-web-accounts.json`.
  */
 
 export const dynamic = "force-dynamic";
@@ -51,9 +52,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Expected a JSON body" }, { status: 415 });
   }
 
-  let body: { password?: unknown };
+  let body: { username?: unknown; password?: unknown };
   try {
-    body = await req.json() as { password?: unknown };
+    body = await req.json() as { username?: unknown; password?: unknown };
   } catch {
     return NextResponse.json({ error: "Expected a JSON body" }, { status: 400 });
   }
@@ -63,30 +64,27 @@ export async function POST(req: Request) {
     return rejected();
   }
 
-  // Resolved once and passed down so verification and session minting cannot
-  // disagree about which credential is in force.
-  const policy = resolveWebAuthPolicy();
+  // A browser with more than one account has to say which one it means. The
+  // field is optional: a client that omits it gets the configured single-user
+  // name, which is how every existing deployment has always signed in.
+  const requested = typeof body.username === "string" ? body.username.trim() : "";
+  const username = requested.length > 0 ? requested : getExpectedUsername();
 
-  // `unavailable` and `open` both land on the same generic failure: a caller
-  // cannot tell a locked server from an unlocked one, and `proxy.ts` already
-  // explains the unreadable-store case to whoever can reach the console.
-  if (policy.mode !== "environment" && policy.mode !== "stored") {
+  const identity = verifyCredential(username, body.password);
+  if (identity === null) {
     await pause(FAILURE_DELAY_MS);
     return rejected();
   }
 
-  if (!verifyWebPassword(body.password, { policy })) {
-    await pause(FAILURE_DELAY_MS);
-    return rejected();
-  }
-
-  const session = issueSessionCookie({ policy });
+  // The name goes into the signed cookie, so `proxy.ts` can rebuild the identity
+  // on the next request without asking the store again.
+  const session = issueSessionCookie({ username: identity.username });
   if (session === null) {
     await pause(FAILURE_DELAY_MS);
     return rejected();
   }
 
-  const response = NextResponse.json({ ok: true }, { headers: NO_STORE });
+  const response = NextResponse.json({ ok: true, user: identity }, { headers: NO_STORE });
   response.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: session,

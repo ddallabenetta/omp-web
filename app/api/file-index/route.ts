@@ -9,6 +9,7 @@ import {
   isFilePathAllowed,
   isWindowsAbsolutePath,
 } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { buildEntriesFromFiles, filterFileEntries, type FileIndexEntry } from "@/lib/file-fuzzy";
 import { isApiRequestAllowed } from "@/lib/request-security";
 
@@ -126,7 +127,7 @@ export async function GET(req: NextRequest) {
     }
     const query = req.nextUrl.searchParams.get("q")?.slice(0, MAX_QUERY_LENGTH) ?? "";
 
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
     if (!isFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

@@ -3,13 +3,17 @@ import { resolve } from "path";
 import { NextResponse } from "next/server";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { getProjectTrustStatus, trustProject } from "@/lib/project-trust";
 import { destroyRpcSessionsForCwd, hasBusyRpcSessionForCwd } from "@/lib/rpc-manager";
 
 export const dynamic = "force-dynamic";
 
-async function validateCwd(value: unknown): Promise<
+async function validateCwd(
+  value: unknown,
+  req: Request
+): Promise<
   { cwd: string } | { response: NextResponse }
 > {
   if (typeof value !== "string" || !value.trim()) {
@@ -25,7 +29,9 @@ async function validateCwd(value: unknown): Promise<
     return { response: NextResponse.json({ error: "Directory does not exist" }, { status: 400 }) };
   }
 
-  const allowedRoots = await getAllowedFileRoots();
+  // The cwd comes from the query string or the body, so the caller picks it;
+  // the roots it is judged against come from the identity and nothing else.
+  const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
@@ -33,7 +39,7 @@ async function validateCwd(value: unknown): Promise<
 }
 
 export async function GET(req: Request) {
-  const result = await validateCwd(new URL(req.url).searchParams.get("cwd"));
+  const result = await validateCwd(new URL(req.url).searchParams.get("cwd"), req);
   if ("response" in result) return result.response;
   return NextResponse.json(getProjectTrustStatus(result.cwd, getAgentDir()));
 }
@@ -41,7 +47,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json() as { cwd?: unknown };
-    const result = await validateCwd(body.cwd);
+    const result = await validateCwd(body.cwd, req);
     if ("response" in result) return result.response;
 
     const agentDir = getAgentDir();

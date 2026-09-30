@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { runNpx, getSafeNpxEnv, redactNpxOutput } from "@/lib/npx";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity, isAdminIdentity } from "@/lib/request-identity";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
 
@@ -33,10 +34,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "scope must be global or project" }, { status: 400 });
     }
 
+    const identity = getRequestIdentity(req.headers);
+    if (identity === null) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
     const isGlobal = scope === "global";
-    if (!isGlobal) {
+    if (isGlobal) {
+      // `npx skills add -g` schreibt in das `~/.agents` des **Prozesskontos** —
+      // es gibt kein Mandanten-`-g`, weil `npx` keine Identitaet kennt. Ein
+      // globaler Install eines Nicht-Admin wuerde also den gemeinsamen
+      // Skill-Bestand veraendern, und genau das ist die Entscheidung von
+      // oben: der Bestand ist global, also schreibt ihn nur, wer Verantwortung
+      // dafuer traegt. Ein Nicht-Admin installiert mit `scope: "project"` in
+      // sein eigenes Verzeichnis.
+      if (!isAdminIdentity(identity)) {
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      }
+    } else {
       if (!cwd) return NextResponse.json({ error: "cwd required for project install" }, { status: 400 });
-      const allowedRoots = await getAllowedFileRoots();
+      const allowedRoots = await getAllowedFileRoots(identity);
       if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
         return NextResponse.json({ error: "Access denied" }, { status: 403 });
       }

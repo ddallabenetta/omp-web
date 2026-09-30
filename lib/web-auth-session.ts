@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { resolveWebAuthPolicy, type WebAuthStoreOptions } from "../bin/web-auth-store.js";
+import { findWebAccount, resolveWebAuthPolicy, validateAccountName, type WebAuthStoreOptions } from "../bin/web-auth-store.js";
 import { getExpectedUsername } from "./web-auth";
 
 /**
@@ -13,6 +13,12 @@ import { getExpectedUsername } from "./web-auth";
  *
  * The signature is keyed on the active credential, which is what makes sessions
  * die with the password — see `resolveSessionSecret`.
+ *
+ * The cookie carries the signed username. That is the whole point of the
+ * change: a session is not "the server is unlocked" but "this person is logged
+ * in", and `proxy.ts` needs the name to build the request identity. Signing it
+ * is what keeps a cookie minted for alice from being accepted for bob — an
+ * unsigned username field would be a header an attacker simply rewrites.
  */
 
 export const SESSION_COOKIE_NAME = "omp_session";
@@ -85,18 +91,55 @@ function deriveSessionKey(secret: string): Buffer {
  *
  * `OMP_WEB_PASSWORD` hands over the plaintext, but a stored credential does
  * not: the file holds a scrypt digest and omp-web cannot read a password back.
- * Both modes therefore key on whatever identifies the credential uniquely and
- * changes with it — the environment value itself, or the stored digest's
+ * All three modes therefore key on whatever identifies the credential uniquely
+ * and changes with it — the environment value itself, or the stored digest's
  * `salt:hash` fingerprint. Either way a new password means a new key, so every
  * cookie signed by the old one stops verifying.
+ *
+ * `username` selects an account. That is what makes a per-account session
+ * possible on an *unlocked* server, where there is no password to bind to at
+ * all: without this branch the admin who created accounts from the settings
+ * panel would find that none of them can sign in, because the server never
+ * demanded a credential. The account's own digest is the right key — unique to
+ * that account, and it rotates with the password.
  */
 function resolveSessionSecret(options: WebAuthStoreOptions): string | null {
   const policy = resolveWebAuthPolicy(options);
+
+  if (typeof options.username === "string" && options.username.length > 0) {
+    const account = findWebAccount(options.username, options);
+    if (account) return `account:${account.username}|${account.password.salt}:${account.password.hash}`;
+  }
+
   const username = getExpectedUsername(options.env);
   if (policy.mode === "environment") return `${username}:${policy.password}`;
   if (policy.mode === "stored") return `${username}|stored:${policy.digest.salt}:${policy.digest.hash}`;
-  // `open` has no password to bind to, and `unavailable` has no readable one.
+  // `open` with no account behind it has no credential to bind to, and
+  // `unavailable` has no readable one. Either way there is nothing to sign.
   return null;
+}
+
+/**
+ * The decoded username field, or `null` if the cookie is not shaped like one.
+ *
+ * Read *before* the signature check and therefore trusted for nothing. It only
+ * decides which key to verify with: the name is an input to `resolveSessionSecret`
+ * the same way a database row id is, and a name that resolves to no credential
+ * simply produces no key, which fails the check. A cookie claiming to be
+ * `steimerbyte` on a server that has no such account cannot get past this.
+ *
+ * It is decoded rather than taken from an option because the verifier does not
+ * know who the cookie claims to be — the cookie is the only place that can say.
+ */
+function readCookieUsername(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parts = value.split(".");
+  if (parts.length !== 6) return null;
+  if (!BASE64URL.test(parts[4])) return null;
+
+  const username = Buffer.from(parts[4], "base64url").toString("utf8");
+  if (validateAccountName(username) !== null && username !== getExpectedUsername()) return null;
+  return username;
 }
 
 function sign(payload: string, secret: string): string {
@@ -117,13 +160,14 @@ function decodeTimestamp(field: string): number | null {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-function buildSessionValue(secret: string): string {
+function buildSessionValue(secret: string, username: string): string {
   const issuedAt = Date.now();
   const payload = [
     SESSION_VERSION,
     encodeTimestamp(issuedAt),
     encodeTimestamp(issuedAt + SESSION_TTL_MS),
     randomBytes(NONCE_BYTES).toString("base64url"),
+    Buffer.from(username, "utf8").toString("base64url"),
   ].join(".");
   return `${payload}.${sign(payload, secret)}`;
 }
@@ -131,10 +175,17 @@ function buildSessionValue(secret: string): string {
 /**
  * Mint a session cookie for the active credential, or `null` when the lock is
  * off and there is nothing to sign.
+ *
+ * `username` goes into the signed payload, not into the key. The key decides
+ * *which credential* a cookie belongs to; the payload field is what
+ * `readSessionCookie` hands back so `proxy.ts` knows who is logged in. Putting
+ * the name in the key instead would make the cookie unverifiable for exactly
+ * the person it was minted for.
  */
 export function issueSessionCookie(options: WebAuthStoreOptions = {}): string | null {
   const secret = resolveSessionSecret(options);
-  return secret === null ? null : buildSessionValue(secret);
+  if (secret === null) return null;
+  return buildSessionValue(secret, options.username ?? getExpectedUsername(options.env));
 }
 
 /**
@@ -145,27 +196,48 @@ export function verifySessionCookie(
   value: unknown,
   options: WebAuthStoreOptions = {},
 ): boolean {
-  if (typeof value !== "string" || value.length === 0) return false;
+  return readSessionCookie(value, options) !== null;
+}
 
-  const parts = value.split(".");
-  if (parts.length !== 5) return false;
+/**
+ * Which account a session cookie belongs to, or `null` for anything malformed,
+ * expired, or signed with a different credential.
+ *
+ * The returned name is *verified*, not decoded-and-hoped: the signature covers
+ * the username field, so swapping alice's name into bob's cookie breaks the
+ * signature rather than granting alice bob's session. That is the difference
+ * between this and a plain field in the cookie, which is a header the client
+ * owns.
+ */
+export function readSessionCookie(
+  value: unknown,
+  options: WebAuthStoreOptions = {},
+): string | null {
+  const username = readCookieUsername(value);
+  if (username === null) return null;
 
-  const [version, issuedAt, expiry, nonce, signature] = parts;
-  if (version !== SESSION_VERSION) return false;
+  const [version, issuedAt, expiry, nonce, encodedUser, signature] = (value as string).split(".");
+  if (version !== SESSION_VERSION) return null;
   if (!BASE64URL.test(issuedAt) || !BASE64URL.test(nonce) || !BASE64URL.test(signature)) {
-    return false;
+    return null;
   }
 
   const expiresAt = decodeTimestamp(expiry);
-  if (expiresAt === null || Date.now() >= expiresAt) return false;
+  if (expiresAt === null || Date.now() >= expiresAt) return null;
 
-  const secret = resolveSessionSecret(options);
-  if (secret === null) return false;
+  // The name from the cookie picks the key. It is untrusted input at this point
+  // and is treated as such: it selects a *stored* credential or nothing, and the
+  // signature below still has to match before the name is handed back.
+  const secret = resolveSessionSecret({ ...options, username });
+  if (secret === null) return null;
 
-  const expected = Buffer.from(sign(`${version}.${issuedAt}.${expiry}.${nonce}`, secret), "utf8");
+  const payload = `${version}.${issuedAt}.${expiry}.${nonce}.${encodedUser}`;
+  const expected = Buffer.from(sign(payload, secret), "utf8");
   const actual = Buffer.from(signature, "utf8");
   // `timingSafeEqual` throws on a length mismatch, and the signature comes off
   // the wire, so the lengths are compared before it is reached.
-  if (expected.length !== actual.length) return false;
-  return timingSafeEqual(expected, actual);
+  if (expected.length !== actual.length) return null;
+  if (!timingSafeEqual(expected, actual)) return null;
+
+  return username;
 }

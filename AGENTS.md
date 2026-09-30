@@ -260,7 +260,8 @@ Newer omp emits `compaction_start` / `compaction_end`; older versions emitted `a
 
 ### File access allow-list
 - `/api/files` is intentionally not a general filesystem browser. Allowed roots come from session cwds, their resolved project roots, `~/omp-cwd-*`, and roots explicitly added with `allowFileRoot()`.
-- `/api/cwd/validate`, `/api/default-cwd`, and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable.
+- `/api/cwd/validate`, `/api/default-cwd`, and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable — but only for an admin. For any other account the candidate is checked against the account's own home with `isPathInUserHome()` and nothing is granted, because the allowlist lives in one process serving every operator: a grant made by one user would widen the filesystem for all of them, permanently.
+- `allowFileRoot()` buckets grants per identity. A call without an identity lands in the unattributed bucket, which only admins can see.
 
 ### Plugins and skills
 - `/api/plugins` drives omp's `PluginManager` (`~/.omp/plugins`): install, uninstall, enable/disable, plus `doctor()` output as diagnostics. omp has no in-place update, so "update" reinstalls the spec with `force`.

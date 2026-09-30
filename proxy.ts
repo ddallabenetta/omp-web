@@ -3,8 +3,9 @@ import {
   isApiRequestAllowed,
   isApiRequestHostAllowed,
 } from "@/lib/request-security";
-import { authorizeWebRequest } from "@/lib/web-auth";
-import { SESSION_COOKIE_NAME, verifySessionCookie } from "@/lib/web-auth-session";
+import { isAdminUsername, authorizeWebRequest, type WebIdentity } from "@/lib/web-auth";
+import { REQUEST_ADMIN_HEADER, REQUEST_USER_HEADER } from "@/lib/request-identity";
+import { SESSION_COOKIE_NAME, readSessionCookie } from "@/lib/web-auth-session";
 
 /**
  * The surfaces that answer without credentials.
@@ -103,6 +104,46 @@ function unauthorizedPage(): string {
 `;
 }
 
+/**
+ * Haenge die Identitaet an den Request an, damit die Route sie lesen kann.
+ *
+ * `request.headers.delete` zuerst ist nicht Kosmetik. Ein Request-Header ist
+ * etwas, das jeder Client mitschickt — ohne das Loeschen koennte jeder Aufrufer
+ * `x-omp-admin: 1` setzen und waere Admin. Der Proxy ist die einzige Stelle, an
+ * der die Identitaet entsteht, also ist er auch die einzige, die den mitgelieferten
+ * Wert entfernen darf.
+ *
+ * Der Weg geht ueber `NextResponse.next({ request: { headers } })`, weil ein
+ * Header auf der `NextResponse` selbst nur in die Antwort zum Client ginge und
+ * niemals im Handler ankommt. Ein duennes `return new NextResponse(...)` waere
+ * die bequemere Form und waere falsch.
+ */
+/**
+ * The identity headers, rewritten from what the request actually proved.
+ *
+ * `identity` is `null` for an anonymous request, and that case has to run
+ * through here as well. Deleting the incoming headers is the only thing that
+ * makes them trustworthy, and a delete that a branch never reaches is not a
+ * protection but dead code: on an unlocked server (`policy.mode === "open"`,
+ * no credential file) every request answers `allow` with `identity === null`,
+ * so guarding this call on `identity !== null` let `x-omp-admin: 1` from the
+ * client through untouched and handed out `/etc`.
+ *
+ * So the delete is unconditional and only the set is conditional. Measured
+ * before the fix: `curl -H 'x-omp-user: root' -H 'x-omp-admin: 1'
+ * .../api/files/etc?type=list` returned 200 and listed `/etc`.
+ */
+function withIdentity(request: NextRequest, identity: WebIdentity | null): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.delete(REQUEST_USER_HEADER);
+  headers.delete(REQUEST_ADMIN_HEADER);
+  if (identity !== null) {
+    headers.set(REQUEST_USER_HEADER, identity.username);
+    if (identity.isAdmin) headers.set(REQUEST_ADMIN_HEADER, "1");
+  }
+  return NextResponse.next({ request: { headers } });
+}
+
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isApiRequest = pathname === "/api" || pathname.startsWith("/api/");
@@ -118,20 +159,42 @@ export function proxy(request: NextRequest) {
   }
 
   // Recovery and login stay reachable while locked out — they are the way out —
-  // but only after the host and cross-site checks above have run.
+  // but only after the host and cross-site checks above have run. They go
+  // through `withIdentity` too, with a null identity: no header is set, and
+  // whatever the client sent under those names is gone. Neither route reads
+  // them today, but a rule with an exception grows a second exception at the
+  // next refactor, and this one is the line that would be copied.
   if (
     pathname === RECOVERY_PAGE || pathname === RECOVERY_API
     || pathname === LOGIN_PAGE || pathname === LOGIN_API
   ) {
-    return NextResponse.next();
+    return withIdentity(request, null);
   }
 
   // Basic Auth still stands: curl, the reverse proxy, and existing clients all
   // send it. A session cookie is the browser's second door, signed by the same
   // credential — so changing the password kills both at once.
-  const decision = authorizeWebRequest(request.headers.get("authorization"));
-  if (decision === "unauthorized" && verifySessionCookie(request.cookies.get(SESSION_COOKIE_NAME)?.value)) {
-    return NextResponse.next();
+  const { decision, identity: basicIdentity } = authorizeWebRequest(request.headers.get("authorization"));
+
+  // The session cookie is the second door, and it is also where the identity
+  // usually comes from: a browser never sends `Authorization`, only the cookie.
+  //
+  // It is read whenever Basic Auth did *not* already identify someone — not
+  // only when the request was rejected. An unlocked server with accounts on it
+  // answers `allow` to everyone, and a signed-in browser there still has to be
+  // told who it is; otherwise the first account created through the admin panel
+  // would sign in to a session nobody downstream can attribute.
+  let identity = basicIdentity;
+  if (identity === null) {
+    const sessionUser = readSessionCookie(request.cookies.get(SESSION_COOKIE_NAME)?.value);
+    if (sessionUser !== null) identity = { username: sessionUser, isAdmin: isAdminUsername(sessionUser) };
+  }
+
+  // Every path that lets a request through goes out through `withIdentity`,
+  // including the anonymous one. The early return below is only for the
+  // identified case, where the headers get rewritten to the proven values.
+  if (identity !== null) {
+    return withIdentity(request, identity);
   }
 
   if (decision === "unavailable") {
@@ -164,7 +227,12 @@ export function proxy(request: NextRequest) {
     });
   }
 
-  return NextResponse.next();
+  // Unlocked server, no credentials on the request: the request is allowed, and
+  // `identity` is null. It still has to pass through `withIdentity`, otherwise
+  // a client-supplied `x-omp-admin: 1` survives into the route. No header is
+  // set, so downstream sees no identity and answers 403 — which is the same
+  // answer an anonymous request gets, and the one its own guards already gave.
+  return withIdentity(request, null);
 }
 
 /**

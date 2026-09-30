@@ -6,6 +6,8 @@ import {
   isExistingFilePathAllowed,
   isFilePathAllowed,
 } from "@/lib/file-access";
+import { getRequestIdentity, type WebIdentity } from "@/lib/request-identity";
+import { isWritePathAllowed } from "@/lib/write-access";
 import { filePathFromSegments } from "@/lib/file-paths";
 import {
   DOCX_PREVIEW_MAX_BYTES,
@@ -72,11 +74,26 @@ function parseFileRequestType(value: string): FileRequestType | null {
   return FILE_REQUEST_TYPE_SET.has(value) ? (value as FileRequestType) : null;
 }
 
-async function getUploadDirectory(segments: string[]): Promise<
+/**
+ * The directory an upload may land in, or the refusal.
+ *
+ * `identity` is threaded in rather than read from the request here so the
+ * decision comes from exactly one place — `proxy.ts` set it after checking
+ * credentials, and nothing downstream can widen it. A `null` identity is a
+ * refusal, never a default user: the URL decides *where* to upload, the
+ * identity decides *whether*.
+ */
+async function getUploadDirectory(
+  segments: string[],
+  identity: WebIdentity | null
+): Promise<
   { directory: string } | { response: NextResponse }
 > {
+  if (!identity) {
+    return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+  }
   const directory = filePathFromSegments(segments);
-  const allowedRoots = await getAllowedFileRoots();
+  const allowedRoots = await getAllowedFileRoots(identity);
   if (!isFilePathAllowed(directory, allowedRoots)) {
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
@@ -106,6 +123,15 @@ async function getUploadDirectory(segments: string[]): Promise<
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
 
+  // The read allowlist says "may be listed". An upload *writes*, so it has to
+  // clear the write boundary as well — that set is deliberately narrower and
+  // never inherits the admin-only `/`. Checked here, once, before a single byte
+  // is accepted: after the loop has written files the damage is already done.
+  // `mustExist: false` is the right mode, the directory demonstrably exists.
+  if (!(await isWritePathAllowed(realDirectory, { mustExist: true }, identity))) {
+    return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+  }
+
   return { directory: realDirectory };
 }
 
@@ -124,7 +150,7 @@ export async function POST(
 
   try {
     const { path: segments } = await params;
-    const uploadDirectory = await getUploadDirectory(segments);
+    const uploadDirectory = await getUploadDirectory(segments, getRequestIdentity(request.headers));
     if ("response" in uploadDirectory) return uploadDirectory.response;
     const { directory } = uploadDirectory;
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
@@ -417,7 +443,16 @@ export async function GET(
     }
     const sessionId = request.nextUrl.searchParams.get("sessionId");
 
-    const allowedRoots = await getAllowedFileRoots();
+    // One identity read, used for every check below. A `null` identity yields an
+    // empty root set from `getAllowedFileRoots`, so the first test already
+    // refuses — the explicit early return is there to make that impossible to
+    // get wrong by accident later.
+    const identity = getRequestIdentity(request.headers);
+    if (!identity) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    const allowedRoots = await getAllowedFileRoots(identity);
     const allowedByRoot = isFilePathAllowed(filePath, allowedRoots);
     const allowedBySessionReference =
       !allowedByRoot &&
@@ -615,8 +650,26 @@ export async function PUT(
   try {
     const { path: segments } = await params;
     const filePath = filePathFromSegments(segments);
-    const allowedRoots = await getAllowedFileRoots();
+
+    // The path arrives in the URL, so the caller chooses it. Everything below
+    // therefore derives from the identity alone — never from the path, the
+    // `expectedMtimeMs` body field, or any other request-supplied value.
+    const identity = getRequestIdentity(request.headers);
+    if (!identity) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    const allowedRoots = await getAllowedFileRoots(identity);
     if (!isExistingFilePathAllowed(filePath, allowedRoots)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    // The editor save is a write, and it was only ever checked against the
+    // *read* roots — which for an admin contain `/`. Reusing them here is what
+    // made "read any file" equal "overwrite any file the service can write".
+    // `mustExist: true`: the file is about to be rewritten in place, so it has
+    // to exist and resolve to a real path inside a writable root.
+    if (!(await isWritePathAllowed(filePath, { mustExist: true }, identity))) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 

@@ -6,6 +6,7 @@ import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
 import type { MCPServer } from "@oh-my-pi/pi-coding-agent/capability/mcp";
 import { setMcpServerEnabled } from "@oh-my-pi/pi-coding-agent/mcp/config-writer";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
 import type { McpConfigResponse, McpScopeConfig, McpServerConfig, McpServerEntry } from "@/lib/settings-api";
 
@@ -216,7 +217,7 @@ function validateServer(entry: McpServerEntry): McpServerEntry {
 async function validatedCwd(req: Request): Promise<string | undefined> {
   const cwd = new URL(req.url).searchParams.get("cwd") ?? undefined;
   if (!cwd) return undefined;
-  const allowedRoots = await getAllowedFileRoots();
+  const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) throw new Error("Access denied");
   return cwd;
 }

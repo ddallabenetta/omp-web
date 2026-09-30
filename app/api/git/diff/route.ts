@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed, isWindowsAbsolutePath } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { getGitFileDiff } from "@/lib/git-changes";
 
 export async function GET(request: NextRequest) {
@@ -13,7 +14,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "path must be an absolute path" }, { status: 400 });
     }
 
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(getRequestIdentity(request.headers));
     if (!isFilePathAllowed(cwd, allowedRoots) || !isFilePathAllowed(filePath, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

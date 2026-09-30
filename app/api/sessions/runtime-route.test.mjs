@@ -17,10 +17,28 @@ const { GET: getSessionState } = await jiti.import("./[id]/state/route.ts");
 
 test("session listing merges live registry snapshots and honors force refresh", () => {
   assert.match(listRoute, /searchParams\.get\("force"\) === "1"/);
-  assert.match(listRoute, /listAllSessions\(\{ force \}\)/);
-  assert.match(listRoute, /attachSessionProjectInfo\(getRpcSessionInfos\(\)\)/);
+  // Beide Quellen filtern auf dieselbe Identitaet. Ein Aufruf ohne Argument
+  // waere der ungefilterte Prozessbestand, und die Route darf ihn nicht machen.
+  assert.match(listRoute, /listAllSessions\(\{ force, identity \}\)/);
+  assert.match(listRoute, /attachSessionProjectInfo\(getRpcSessionInfos\(identity\)\)/);
   assert.match(listRoute, /mergeSessionLists\(persistedSessions, runtimeSessions\)/);
   assert.match(listRoute, /"Cache-Control": "no-store"/);
+});
+
+test("session listing refuses a request without an identity", async (t) => {
+  // Eine Session-Id adressiert prompt, Kontext, Export und DELETE. Ohne
+  // Identitaet darf die Route keine Ids herausgeben — auch nicht eine leere
+  // Liste, denn die sieht fuer den Client aus wie "keine Sessions".
+  const { GET: getSessionList } = await jiti.import("./route.ts");
+  const response = await getSessionList(
+    new Request("http://localhost/api/sessions", { headers: { host: "localhost" } }),
+  );
+
+  assert.equal(response.status, 403);
+  const body = await response.json();
+  assert.equal(body.sessions, undefined, "keine Session-Liste, auch nicht leer");
+  assert.equal(body.runningSessionIds, undefined);
+  t.diagnostic(`ohne x-omp-user: ${response.status} ${JSON.stringify(body)}`);
 });
 
 test("session reads use the live SessionManager before requiring a JSONL path", () => {

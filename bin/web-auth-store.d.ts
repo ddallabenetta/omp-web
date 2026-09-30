@@ -49,18 +49,38 @@ export type WebAuthPolicy =
 
 export interface WebAuthStoreOptions {
   env?: NodeJS.ProcessEnv;
+  /** Path of the credential file. Not the account file — see `accountsFile`. */
   file?: string;
+  /**
+   * Path of `omp-web-accounts.json`. A separate option on purpose: the two files
+   * have different schemas, and sharing one field would make `verifyCredential`
+   * read two incompatible documents from the same path.
+   */
+  accountsFile?: string;
   /** scrypt cost overrides. Only tests pass this, to keep hashing cheap. */
   params?: Partial<Omit<WebAuthDigest, "algorithm" | "salt" | "hash">>;
   policy?: WebAuthPolicy;
   now?: number;
   /**
-   * Used by `setWebPassword` to atomically rotate the stored username in the
-   * same write. `setWebUsername` and the read-side helpers ignore it.
-   * `unknown` rather than `string` so the route handler can pass body fields
-   * straight through without an intermediate cast.
+   * Der Benutzername, fuer den eine Sitzung oder ein Konto aufgeloest wird.
+   *
+   * `string | undefined`, nicht `unknown`, und das ist eine bewusste Entscheidung
+   * gegen die alte Fassung. Damals stand hier `unknown`, damit der
+   * Passwort-Store ein ungeprueftes Body-Feld durchreichen konnte. Seit
+   * `lib/web-auth-session.ts` dasselbe Feld fuer etwas anderes benutzt — es
+   * waehlt damit das Konto, dessen Digest den Sitzungsschluessel bildet —,
+   * erzeugte die Doppelbelegung genau den Fehler, den eine Option mit zwei
+   * Bedeutungen immer erzeugt: `WebAuthStoreOptions` war nicht mehr zu sich
+   * selbst zuweisbar, und jeder Aufrufer brauchte einen Cast.
+   *
+   * Der Preis ist eine Pruefung an der Route, und die ist billig und ehrlich:
+   * `setWebPassword` validiert ohnehin, und wer hier etwas anderes durchreichen
+   * will, bekommt einen Compilerfehler statt eines `any` zur Laufzeit. Ein Feld,
+   * das zwei Typen je nach Aufrufer haben darf, ist kein Flexibilitaetsgewinn,
+   * sondern eine Stelle, an der der naechste Aufrufer die falsche Bedeutung
+   * trifft.
    */
-  username?: unknown;
+  username?: string;
 }
 
 export type RecoveryIssueResult =
@@ -78,12 +98,86 @@ export type WebAuthState =
   | { status: "unreadable"; config: null }
   | { status: "ok"; config: Record<string, unknown> };
 
+/**
+ * Ein Konto aus `omp-web-accounts.json`, in der Form, in der es benutzt wird.
+ *
+ * `isAdmin` steht hier, wird aber **nie** gelesen: die Funktionen berechnen es
+ * bei jedem Aufruf neu aus `isAdminUsername`. Es steht in der Liste, damit ein
+ * Aufrufer nicht selbst rechnen muss.
+ */
+export interface WebAccount {
+  username: string;
+  password: WebAuthDigest;
+  enabled: boolean;
+  isAdmin: boolean;
+  /** Absoluter Pfad des Home-Verzeichnisses, `/home/$username`. */
+  home: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/**
+ * Das Ergebnis eines Konto-Listenlesens. `unreadable` ist kein leeres
+ * Ergebnis: es heisst, die Datei existiert und ist kaputt, und ein Aufrufer, der
+ * das wie "niemand angelegt" behandelt, zeigt eine leere Oberflaeche, in der ein
+ * Tippfehler niemandem auffaellt.
+ */
+export interface WebAccountList {
+  status: "missing" | "ok" | "unreadable";
+  accounts: WebAccount[];
+  file: string;
+}
+
+/** Ein Konto, wie es auf der Platte liegt — ohne die abgeleiteten Felder. */
+export interface WebAccountEntry {
+  username: string;
+  password: WebAuthDigest;
+  enabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export declare const ACCOUNT_NAME_MAX_LENGTH: number;
+export declare const DEFAULT_WEB_ADMIN_USERNAMES: string[];
 export declare const DEFAULT_WEB_AUTH_USERNAME: string;
 export declare const MIN_PASSWORD_LENGTH: number;
 export declare const RECOVERY_CODE_TTL_MS: number;
 export declare const RECOVERY_MAX_ATTEMPTS: number;
+export declare const WEB_ACCOUNTS_FILENAME: string;
 export declare const WEB_AUTH_FILENAME: string;
 export declare const WEB_AUTH_USERNAME: string;
+
+export declare function createWebAccount(
+  username: unknown,
+  password: unknown,
+  options?: WebAuthStoreOptions,
+): WebAccount;
+export declare function findWebAccount(
+  username: unknown,
+  options?: WebAuthStoreOptions,
+): WebAccountEntry | null;
+export declare function isAdminUsername(username: unknown, env?: NodeJS.ProcessEnv): boolean;
+export declare function listWebAccounts(options?: WebAuthStoreOptions): WebAccountList;
+export declare function readWebAccounts(options?: WebAuthStoreOptions): {
+  status: "missing" | "ok" | "unreadable";
+  accounts: WebAccountEntry[];
+  file: string;
+};
+export declare function resolveAccountHome(username: string, env?: NodeJS.ProcessEnv): string;
+export declare function resolveAdminUsernames(env?: NodeJS.ProcessEnv): string[];
+export declare function resolveHomeRoot(env?: NodeJS.ProcessEnv): string;
+export declare function resolveWebAccountsFile(env?: NodeJS.ProcessEnv): string;
+export declare function setWebAccountEnabled(
+  username: unknown,
+  enabled: boolean,
+  options?: WebAuthStoreOptions,
+): WebAccount;
+export declare function setWebAccountPassword(
+  username: unknown,
+  password: unknown,
+  options?: WebAuthStoreOptions,
+): WebAccount;
+export declare function validateAccountName(username: unknown): string | null;
 
 export declare function clearVerificationCache(): void;
 export declare function clearWebPassword(options?: WebAuthStoreOptions): WebAuthStatus;

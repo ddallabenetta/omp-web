@@ -3,6 +3,7 @@ import type { SkillInstallScope } from "@/lib/api-types";
 import { checkSkillUpdates } from "@/lib/skill-updates";
 import { loadSkillsWithInstallInfo } from "@/lib/skills-service";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +24,7 @@ export async function POST(req: Request) {
     };
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
     if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -36,7 +37,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "package and scope must be provided together" }, { status: 400 });
     }
 
-    const { skills } = await loadSkillsWithInstallInfo(cwd);
+    const { skills } = await loadSkillsWithInstallInfo(cwd, getRequestIdentity(req.headers));
     const installs = skills
       .map((skill) => skill.install)
       .filter((install): install is NonNullable<typeof install> => Boolean(install))

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTerminalManager } from "@/lib/terminal-manager";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { authorizeTerminalAccess, requireIdentity } from "../../owner-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const { id } = await params;
+  const guard = requireIdentity(req.headers);
+  if (!guard.ok) return guard.response;
+  const access = authorizeTerminalAccess(id, guard.identity);
+  if (!access.ok) return access.response;
+
   const manager = getTerminalManager();
   const info = manager.get(id);
   if (!info) return NextResponse.json({ error: "Unknown terminal" }, { status: 404 });

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { getTerminalManager } from "@/lib/terminal-manager";
 import { isApiRequestAllowed } from "@/lib/request-security";
+import { authorizeTerminalAccess, requireIdentity } from "../../owner-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return new Response("Untrusted request", { status: 403 });
   }
   const { id } = await params;
+  // Eine fremde Shell wird nicht angehaengt, sonst liefert der Stream die
+  // Ausgabe eines Prozesses, der jemand anderem gehoert — dauerhaft, ueber SSE.
+  const guard = requireIdentity(req.headers);
+  if (!guard.ok) return new Response("Unknown terminal", { status: 404 });
+  const access = authorizeTerminalAccess(id, guard.identity);
+  if (!access.ok) return new Response("Unknown terminal", { status: 404 });
+
   const manager = getTerminalManager();
   const info = manager.get(id);
   if (!info) {

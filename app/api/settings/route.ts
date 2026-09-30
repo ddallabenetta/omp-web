@@ -13,9 +13,11 @@ import {
   TAB_METADATA,
   type SettingPath,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { getOmpRuntime, getSettingsForCwd } from "@/lib/omp-runtime";
+import { getSettingsForIdentity } from "@/lib/omp-runtime";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { getAvailableWebThemes, getWebThemeConfig } from "@/lib/omp-theme";
+import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import type {
   SettingsField,
   SettingsFieldType,
@@ -26,9 +28,9 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-async function validateCwd(cwd: string | null): Promise<string | undefined> {
+async function validateCwd(cwd: string | null, req: Request): Promise<string | undefined> {
   if (!cwd) return undefined;
-  const allowedRoots = await getAllowedFileRoots();
+  const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) throw new Error("Access denied");
   return cwd;
 }
@@ -120,8 +122,11 @@ function validateSettingValue(path: SettingPath, value: unknown): SettingsValue 
 
 export async function GET(req: Request) {
   try {
-    const cwd = await validateCwd(new URL(req.url).searchParams.get("cwd"));
-    const settings = await getSettingsForCwd(cwd);
+    const cwd = await validateCwd(new URL(req.url).searchParams.get("cwd"), req);
+    // Die Identitaet wird hier wie beim cwd-Pfad ueber den Header gelesen und
+    // durchgereicht: ohne sie sieht ein Mandant die `config.yml` des
+    // Prozesskontos, also auch dessen gespeicherte Werte.
+    const settings = await getSettingsForIdentity(getRequestIdentity(req.headers), cwd);
     const [availableThemes, theme] = await Promise.all([
       getAvailableWebThemes(),
       getWebThemeConfig(settings),
@@ -166,6 +171,20 @@ export async function GET(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  // Ohne `isApiRequestAllowed` war dies eine POST-als-GET-Woerterbuchlücke auf
+  // dem einen Endpunkt, der fremde Herkunft überhaupt bemerken wuerde. Und
+  // `identity === null` heisst 403, nicht Default-Benutzer: die
+  // Mandantengrenze darf keinen Fallback haben.
+  if (!isApiRequestAllowed(req)) {
+    return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  }
+  const identity = getRequestIdentity(req.headers);
+  if (identity === null) {
+    return NextResponse.json({ error: "Access denied" }, { status: 403 });
+  }
+  if (!hasJsonContentType(req)) {
+    return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
   try {
     const body = await req.json() as { path?: string; value?: unknown };
     if (!body.path || !(body.path in SETTINGS_SCHEMA) || !hasUi(body.path as SettingPath)) {
@@ -179,7 +198,12 @@ export async function PATCH(req: Request) {
     ) {
       throw new Error("Unknown omp theme");
     }
-    const { settings } = await getOmpRuntime();
+    // `settings.set()` schreibt in die globale Ebene der Instanz und `flush()`
+    // auf die Platte. Mit der pro-Konto-Instanz aus `getSettingsForIdentity()`
+    // landet der Wert in der `config.yml` **dieses** Kontos; mit der
+    // Prozess-Singleton waere es die `config.yml` des Betreibers gewesen —
+    // derselbe Leck-Typ wie bei `models.yml`, nur eine Ebene hoeher.
+    const settings = await getSettingsForIdentity(identity, undefined);
     settings.set(path, value as never);
     await settings.flush();
     return NextResponse.json({ success: true, value: serializableValue(settings.get(path)) });

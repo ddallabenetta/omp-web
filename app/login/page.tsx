@@ -11,9 +11,11 @@ import styles from "./login.module.css";
  *
  * The page posts the credential to `/api/web-access/login`, which sets an
  * `httpOnly` session cookie, and then hands the browser back to `/`. The
- * username defaults to `omp` and is configurable via `OMP_WEB_USERNAME` on the
- * server; the field is pre-filled with that default so existing deployments
- * still sign in with one keystroke.
+ * username field is pre-filled with `omp` because that is what every
+ * single-user deployment has always used — one keystroke, and existing
+ * installations keep working. With several accounts it is just a first guess:
+ * the field is editable, and the server resolves an omitted name to the same
+ * default.
  */
 
 export default function LoginPage() {

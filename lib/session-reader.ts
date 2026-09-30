@@ -14,6 +14,8 @@ import type { SessionEntry as OmpSessionEntry, SessionInfo as OmpSessionInfo } f
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
+import { isPathWithinRoots } from "./path-security";
+import { getUserHome, type WebIdentity } from "./request-identity";
 import { resolveProject, type ProjectInfo } from "./worktree";
 
 export { getAgentDir };
@@ -70,20 +72,61 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
   return attachSessionProjectInfo(sessions);
 }
 
-export async function listAllSessions(options: { force?: boolean } = {}): Promise<SessionInfo[]> {
+/**
+ * Besitz einer Session bestimmen.
+ *
+ * Wo die Dateien liegen und wer sie gehoeren, sind hier zwei getrennte Fragen.
+ * Der Bestand beantwortet die erste klar: `SessionManager.listAll()` liest
+ * `~/.omp/agent/sessions/<cwd-kodiert>/*.jsonl`, ein einziger gemeinsamer Baum
+ * fuer alle Bediener, und der `cwd` steht im Header jeder Datei. Pro Nutzer
+ * umziehen hiesse, jeden Prozess-Agent-Dir pro Request umzuschalten — das ist
+ * eine Migration von Fremdbestand, keine Route, und sie waere hier nicht
+ * rueckstandsfrei zu machen. Der Besitz ergibt sich deshalb aus dem `cwd`: eine
+ * Session gehoert dem Nutzer, dessen Home sie enthaelt.
+ *
+ * Das ist dieselbe Grenze, die `cwd/validate` fuer Arbeitsverzeichnisse zieht,
+ * und sie ist absichtlich dieselbe: ein Nutzer kann eine Session nicht in
+ * fremder Home anlegen, also kann er auch keine dort erben.
+ *
+ * Ein Admin sieht alles, weil sein Konto-Wurzelraum `/` ist.
+ */
+function isSessionOwnedBy(session: SessionInfo, identity: WebIdentity): boolean {
+  if (identity.isAdmin) return true;
+  if (!session.cwd) return false;
+  return isPathWithinRoots(session.cwd, new Set([getUserHome(identity)]));
+}
+
+/** Nur die Sessions einer Identitaet. Ohne Identitaet: alles (CLI-/Startpfad). */
+function filterSessionsForIdentity(
+  sessions: SessionInfo[],
+  identity: WebIdentity | null,
+): SessionInfo[] {
+  if (!identity) return sessions;
+  return sessions.filter((session) => isSessionOwnedBy(session, identity));
+}
+
+export async function listAllSessions(
+  options: { force?: boolean; identity?: WebIdentity | null } = {},
+): Promise<SessionInfo[]> {
+  const identity = options.identity ?? null;
   if (options.force) invalidateSessionListCache();
   const generation = globalThis.__ompSessionListGeneration ?? 0;
 
   // Return cached result if still fresh (avoids re-scanning session files
   // and re-spawning git processes on every page load).
+  //
+  // Der Cache haelt bewusst den UNGEFILTERTEN Scan. Wer pro Identitaet cachen
+  // wuerde, brauchte einen Cache-Schluessel pro Mandant — und der Scan selbst
+  // ist der teure Teil, nicht der Filter darueber. Ein Mandant darf den
+  // Cache eines anderen nicht lesen koennen, also gefiltert wird erst hier.
   if (globalThis.__ompSessionListCache && Date.now() - globalThis.__ompSessionListCache.ts < SESSION_LIST_CACHE_TTL_MS) {
-    return globalThis.__ompSessionListCache.data;
+    return filterSessionsForIdentity(globalThis.__ompSessionListCache.data, identity);
   }
 
   // Coalescing dedup: concurrent callers share the same in-flight promise
   // only while it belongs to the current cache generation.
   if (globalThis.__ompSessionListPromise && globalThis.__ompSessionListPromiseGeneration === generation) {
-    return globalThis.__ompSessionListPromise;
+    return globalThis.__ompSessionListPromise.then((data) => filterSessionsForIdentity(data, identity));
   }
 
   const loadPromise = loadAllSessions().then((data) => {
@@ -91,7 +134,7 @@ export async function listAllSessions(options: { force?: boolean } = {}): Promis
     // scan for the current generation. Returning the stale result here made a
     // refresh race indistinguishable from a successful refresh.
     if ((globalThis.__ompSessionListGeneration ?? 0) !== generation) {
-      return listAllSessions();
+      return listAllSessions(options);
     }
     globalThis.__ompSessionListCache = { data, ts: Date.now() };
     return data;
@@ -105,7 +148,7 @@ export async function listAllSessions(options: { force?: boolean } = {}): Promis
 
   globalThis.__ompSessionListPromise = trackedPromise;
   globalThis.__ompSessionListPromiseGeneration = generation;
-  return trackedPromise;
+  return trackedPromise.then((data) => filterSessionsForIdentity(data, identity));
 }
 
 // ============================================================================

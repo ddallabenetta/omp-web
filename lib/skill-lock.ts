@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope } from "@/lib/api-types";
+import { getUserHome, type WebIdentity } from "./request-identity";
 
 interface SkillLockEntry {
   source?: unknown;
@@ -26,8 +27,16 @@ interface AnnotateSkillOptions {
   agentDir: string;
   globalLockPath?: string;
   projectLockPath?: string;
+  identity?: WebIdentity | null;
 }
 
+/**
+ * The single global lock — kept for the process identity (an admin).
+ *
+ * `getGlobalSkillsLockPath` stays the *shape* function, but it is no longer
+ * called without an identity. A tenant gets their own file; see
+ * `getSkillsLockPathForIdentity`.
+ */
 export function getGlobalSkillsLockPath({
   homeDir = homedir(),
   xdgStateHome = process.env.XDG_STATE_HOME,
@@ -35,6 +44,33 @@ export function getGlobalSkillsLockPath({
   return xdgStateHome
     ? join(xdgStateHome, "skills", ".skill-lock.json")
     : join(homeDir, ".agents", ".skill-lock.json");
+}
+
+/**
+ * Die Lock-Datei eines Kontos.
+ *
+ * Ein einziger globaler Lock hiess: was Alice installiert, sperrt Bob. Der
+ * Eintrag nennt Quelle, Ref und Hash — mit einem fremden Eintrag sieht Bob
+ * einen Skill als installiert, den er nie geholt hat, und der Update-Pfad
+ * schreibt in ein fremdes Verzeichnis. Das ist kein Bedienfehler, das ist ein
+ * Mandantenleck in einer Datei, die ein Nutzer fuer sich beschreiben darf.
+ *
+ * Fuer einen Nicht-Admin liegt die Datei deshalb in dessen eigenem
+ * `.agents`-Verzeichnis unterhalb seiner Home, mit dem Benutzernamen im Pfad.
+ * Der Admin bleibt auf der globalen Datei: sein Verzeichnis ist das
+ * Prozess-Verzeichnis, und die Skill-Installation schreibt ohnehin mit `npx
+ * skills add -g` in genau dieses `~/.agents` — ein zweites, vom
+ * Installationswerkzeug nicht beachtetes Verzeichnis wuerde jeden installierten
+ * Skill als unbekannt ausweisen.
+ *
+ * `null` (keine Identitaet) liefert den globalen Pfad. Das ist kein
+ * Rechteausweichen: die Route, die diesen Wert verwendet, muss vorher selbst
+ * eine Identitaet verlangen — der Lock-Pfad allein gibt nichts frei, er sagt
+ * nur, wo gelesen wird.
+ */
+export function getSkillsLockPathForIdentity(identity: WebIdentity | null): string {
+  if (identity === null || identity.isAdmin) return getGlobalSkillsLockPath();
+  return join(getUserHome(identity), ".agents", ".skill-lock.json");
 }
 
 function readSkillLock(path: string): Record<string, SkillLockEntry> {
@@ -123,7 +159,8 @@ export function annotateSkillsWithInstallInfo(
   {
     cwd,
     agentDir,
-    globalLockPath = getGlobalSkillsLockPath(),
+    identity,
+    globalLockPath = getSkillsLockPathForIdentity(identity ?? null),
     projectLockPath = join(cwd, "skills-lock.json"),
   }: AnnotateSkillOptions,
 ): SkillInfo[] {

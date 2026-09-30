@@ -10,6 +10,7 @@ import {
 import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
 import { listModelRoles, readDefaultModelRole } from "@/lib/model-roles";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { getOmpRuntime, getSettingsForCwd } from "@/lib/omp-runtime";
 
 export const dynamic = "force-dynamic";
@@ -98,7 +99,7 @@ export async function GET(req: Request) {
   if (!cwdStat.isDirectory()) {
     return Response.json({ error: `Not a directory: ${cwd}` }, { status: 400 });
   }
-  const allowedRoots = await getAllowedFileRoots();
+  const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
     return Response.json({ error: "Access denied" }, { status: 403 });
   }

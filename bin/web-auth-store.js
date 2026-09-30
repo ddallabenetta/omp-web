@@ -18,7 +18,7 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } = require("node:crypto");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } = require("node:fs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { homedir } = require("node:os");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -71,6 +71,37 @@ const RECOVERY_GROUP_LENGTH = 4;
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /**
+ * Namen der Konten, die mehr duerfen als ihr eigenes Verzeichnis.
+ *
+ * ABSICHT UND KOSTEN, NICHT VERSEHEN: ein Admin darf fremde Verzeichnisse
+ * beschreiben, weil der Server ohnehin als ein Benutzer laeuft. Ein
+ * kompromittiertes Admin-Passwort ist damit gleichbedeutend mit einer
+ * Kompromittierung des Hosts. Das ist eine bewusste Entscheidung des Betreibers
+ * und keine Nachlaessigkeit — wer sie uebernimmt, tut es mit offenen Augen.
+ *
+ * Die Liste ist eine Eigenschaft der *Installation*, nicht der Anmeldedaten.
+ * Deshalb steht sie hier als Konstante und nicht im JSON: eine Datei, die der
+ * Webprozess selbst schreiben kann, darf keine Rechte vergeben, die er sonst
+ * nur ueber eine Environment-Variable bekommt. `OMP_WEB_ADMINS` (kommagetrennt)
+ * ueberschreibt sie, wenn eine andere Aufteilung noetig ist.
+ */
+const DEFAULT_WEB_ADMIN_USERNAMES = ["pi", "omp", "steimerbyte"];
+
+/**
+ * Unix-Konvention fuer Kontonamen.
+ *
+ * Strenger als `validateUsername` oben, und das ist Absicht: der Name wandert
+ * als einzelnes Pfadsegment nach `/home/$user`. Zugelassen sind deshalb nur
+ * Kleinbuchstaben, Ziffern, Unterstrich und Bindestrich, beginnend mit einem
+ * Buchstaben oder Unterstrich. Damit ist ausgeschlossen, was `validateUsername`
+ * fuer den Basic-Auth-Namen erlauben muss und hier nicht darf: Pfadtrenner,
+ * `..`, fuehrende Bindestriche, Grossbuchstaben (Kollision auf case-insensitiven
+ * Dateisystemen) und jedes Zeichen, das eine Shell umdeuten koennte.
+ */
+const ACCOUNT_NAME_PATTERN = /^[a-z_][a-z0-9_-]{0,31}$/;
+const ACCOUNT_NAME_MAX_LENGTH = 32;
+
+/**
  * Resolve omp's agent directory without importing the SDK.
  *
  * `@oh-my-pi/pi-utils` ships TypeScript sources and `bun:` builtins, so the
@@ -98,6 +129,59 @@ function resolveWebAuthFile(env = process.env) {
   return env.OMP_WEB_AUTH_FILE
     ? resolve(env.OMP_WEB_AUTH_FILE)
     : join(resolveAgentDir(env), WEB_AUTH_FILENAME);
+}
+
+/**
+ * Kontoverzeichnis, als eigene Datei neben der Credential-Datei.
+ *
+ * Warum nicht in `omp-web-auth.json` mitlesen und -schreiben:
+ *
+ *  1. Das bestehende Schema ist Version 1 und traegt genau *ein* Konto. Eine
+ *     Nutzerliste darin waere ein Versionssprung, und eine laufende Installation
+ *     darf durch dieses Feature nicht kaputtgehen — sie muss beim Lesen
+ *     unveraendert funktionieren. Eine zweite Datei laesst die alte unberuehrt.
+ *  2. Die beiden Dateien haben verschiedene Lebensdauern. Die Credential-Datei
+ *     wird bei jeder Passwortrotation geschrieben; das Kontoverzeichnis nur
+ *     beim Anlegen eines Kontos. Vermischt man beides, dreht jede
+ *     Passwortrotation eine Datei, die es nicht betrifft.
+ *  3. Die Credential-Datei gehoert dem Prozessbenutzer und ist der *eine*
+ *     Zugang, mit dem man in die Admin-Oberflaeche kommt. Wer in derselben
+ *     Datei Konten anlegen kann, kann sich sonst selbst Admin schreiben.
+ *
+ * `OMP_WEB_ACCOUNTS_FILE` ueberschreibt den Ort, wie bei der Credential-Datei.
+ */
+const WEB_ACCOUNTS_FILENAME = "omp-web-accounts.json";
+const WEB_ACCOUNTS_VERSION = 1;
+
+function resolveWebAccountsFile(env = process.env) {
+  return env.OMP_WEB_ACCOUNTS_FILE
+    ? resolve(env.OMP_WEB_ACCOUNTS_FILE)
+    : join(resolveAgentDir(env), WEB_ACCOUNTS_FILENAME);
+}
+
+/**
+ * Wurzelverzeichnis, unter dem jedes Konto sein Home bekommt.
+ *
+ * Fest auf `/home` eingestellt waere eine Annahme ueber die Maschine; deshalb
+ * ist es eine Konstante mit einem Override. Ein Konto wird **nie** ausserhalb
+ * dieser Wurzel angelegt — `validateAccountName` schliesst Pfadtrenner aus, und
+ * `join` haengt genau ein Segment an.
+ */
+function resolveHomeRoot(env = process.env) {
+  const raw = env.OMP_WEB_HOME_ROOT;
+  return typeof raw === "string" && raw.trim().length > 0 ? resolve(raw.trim()) : "/home";
+}
+
+/**
+ * Das Home eines Kontos: genau ein Segment unterhalb der Home-Wurzel.
+ *
+ * Kein `statSync` und kein Umweg ueber ein vorhandenes Verzeichnis. `join`
+ * normalisiert `..` zwar, aber die Absicherung ist `validateAccountName`, die
+ * einen Namen mit Trennern gar nicht erst zulässt — eine zweite Pruefung, die
+ * dasselbe tut, waere nur eine, die man beim Lesen fuer noetig haelt.
+ */
+function resolveAccountHome(username, env = process.env) {
+  return join(resolveHomeRoot(env), username);
 }
 
 /** Reject passwords that cannot protect anything. Returns an error message, or null when acceptable. */
@@ -129,6 +213,48 @@ function validateUsername(username) {
   if (trimmed.length > 256) return "The username must be at most 256 characters long.";
   if (/\s/.test(trimmed)) return "The username cannot contain whitespace.";
   return null;
+}
+
+/**
+ * Konten-Namen, die als einzelnes Pfadsegment unter `/home` landen.
+ *
+ * Bewusst strenger als `validateUsername`: dort geht es nur darum, was Basic
+ * Auth uebertragen kann, hier darum, was ein Verzeichnisname sein darf. Deshalb
+ * kein Slash, kein `..`, kein fuehrender Bindestrich, keine Grossbuchstaben und
+ * keine Maximallaenge ueber 32 Zeichen.
+ */
+function validateAccountName(username) {
+  if (typeof username !== "string") return "A username is required.";
+  const trimmed = username.trim();
+  if (trimmed.length === 0) return "A username is required.";
+  if (trimmed !== username) return "The username cannot start or end with a space.";
+  if (trimmed.length > ACCOUNT_NAME_MAX_LENGTH) {
+    return `The username must be at most ${ACCOUNT_NAME_MAX_LENGTH} characters long.`;
+  }
+  if (!ACCOUNT_NAME_PATTERN.test(trimmed)) {
+    return "The username may only contain lowercase letters, digits, underscores and hyphens, and must start with a letter or an underscore.";
+  }
+  return null;
+}
+
+/**
+ * Wer mehr darf als sein eigenes Verzeichnis.
+ *
+ * Siehe `DEFAULT_WEB_ADMIN_USERNAMES` fuer die Begruendung, warum das eine
+ * Eigenschaft der Installation ist. `OMP_WEB_ADMINS` ueberschreibt die
+ * Vorgabe; leerer Wert bedeutet "es gibt keine Admins" und NICHT "alle".
+ */
+function resolveAdminUsernames(env = process.env) {
+  const raw = env.OMP_WEB_ADMINS;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+  }
+  return DEFAULT_WEB_ADMIN_USERNAMES;
+}
+
+function isAdminUsername(username, env = process.env) {
+  if (typeof username !== "string" || username.length === 0) return false;
+  return resolveAdminUsernames(env).includes(username);
 }
 
 function scryptOptions(params) {
@@ -406,6 +532,219 @@ function timestamp() {
 }
 
 /**
+ * Das Kontoverzeichnis lesen.
+ *
+ * Drei Ausgaenge, aus demselben Grund wie bei `readWebAuthState`: eine fehlende
+ * Datei bedeutet "noch niemand angelegt", eine kaputte darf nicht so tun, als
+ * gaebe es keine Konten — sonst wuerde ein Tippfehler in der Datei eine ganze
+ * Mandantenliste unsichtbar machen.
+ */
+/**
+ * Die Konten-Datei aus den Optionen.
+ *
+ * Absichtlich **nicht** `options.file`: das ist der Pfad der Credential-Datei
+ * und gehoert `setWebPassword` und Freunden. Ein gemeinsames Feld hiesse, dass
+ * ein Test, der sein Passwort in eine Temp-Datei schreibt, ungefragt auch die
+ * Kontenliste dorthin umhaengt — und dass `verifyCredential` dieselbe Datei
+ * zweimal mit zwei verschiedenen Schemata lesen wuerde.
+ */
+function resolveWebAccountsFileFor(options = {}) {
+  const env = options.env ?? process.env;
+  return options.accountsFile ?? resolveWebAccountsFile(env);
+}
+
+function readWebAccounts(options = {}) {
+  const file = resolveWebAccountsFileFor(options);
+  let contents;
+  try {
+    contents = readFileSync(file, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return { status: "missing", accounts: [], file };
+    return { status: "unreadable", accounts: [], file };
+  }
+
+  try {
+    const parsed = JSON.parse(contents);
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.users)) {
+      return { status: "unreadable", accounts: [], file };
+    }
+    return { status: "ok", accounts: parsed.users, file };
+  } catch {
+    return { status: "unreadable", accounts: [], file };
+  }
+}
+
+/** Wie `writeWebAuthConfig`: atomar, Rechte werden nie aufgeweicht. */
+function writeWebAccounts(accounts, options = {}) {
+  const file = resolveWebAccountsFileFor(options);
+  writeWebAuthConfig({ version: WEB_ACCOUNTS_VERSION, users: accounts, updatedAt: timestamp() }, file);
+  return file;
+}
+
+/** Ein Eintrag, der nicht den erwarteten Feldern entspricht, wird verworfen statt geraten. */
+function normalizeAccountEntry(entry, env = process.env) {
+  if (!entry || typeof entry !== "object") return null;
+  if (validateAccountName(entry.username) !== null) return null;
+  if (!isUsableDigest(entry.password)) return null;
+  return {
+    username: entry.username,
+    password: entry.password,
+    enabled: entry.enabled !== false,
+    isAdmin: isAdminUsername(entry.username, env),
+    home: resolveAccountHome(entry.username, env),
+    createdAt: typeof entry.createdAt === "string" ? entry.createdAt : null,
+    updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : null,
+  };
+}
+
+/**
+ * Alle Konten, fuer die Admin-Oberflaeche und Login.
+ *
+ * `isAdmin` wird **immer** neu berechnet und nie aus der Datei uebernommen:
+ * die Datei koennte von einem aelteren Stand stammen oder manipuliert sein, und
+ * die Admin-Frage gehoert der Installation, nicht dem Datensatz. Deshalb steht
+ * sie hier auch nicht beim Schreiben, sondern wird beim Lesen abgeleitet — ein
+ * geschriebenes `isAdmin: true` fuer einen Nicht-Admin wird also stillschweigend
+ * zu `false`.
+ */
+function listWebAccounts(options = {}) {
+  const state = readWebAccounts(options);
+  const accounts = state.accounts
+    .map((entry) => normalizeAccountEntry(entry, options.env ?? process.env))
+    .filter((entry) => entry !== null)
+    .sort((a, b) => a.username.localeCompare(b.username));
+  return { status: state.status, accounts, file: state.file };
+}
+
+/**
+ * Ein Konto anlegen: Datensatz **und** Home-Verzeichnis.
+ *
+ * Das Verzeichnis entsteht hier und nur hier. Es gibt bewusst keinen
+ * Registrierungsweg: wer sich anmelden kann, muss schon in dieser Liste stehen,
+ * und wer in dieser Liste steht, hat ein Passwort vom Admin bekommen. Eine
+ * Selbstbedienung, die sich ihr eigenes Verzeichnis anlegt, waere eine
+ * Anmeldeschleife, die sich selbst Rechte gibt.
+ *
+ * Rechte `0o700`, Besitzer der Prozessbenutzer. Das ist eine echte Grenze
+ * innerhalb des Hosts — die einzige hier, denn der Prozess selbst laeuft
+ * weiterhin ohne uid-Wechsel (siehe `lib/web-auth.ts`).
+ */
+function createWebAccount(username, password, options = {}) {
+  const env = options.env ?? process.env;
+  const file = resolveWebAccountsFileFor(options);
+  const name = typeof username === "string" ? username.trim() : username;
+
+  const invalidName = validateAccountName(name);
+  if (invalidName) throw new Error(invalidName);
+  const invalidPassword = validatePassword(password);
+  if (invalidPassword) throw new Error(invalidPassword);
+
+  const state = readWebAccounts(options);
+  if (state.status === "unreadable") {
+    throw new Error(`The omp-web account file at ${file} could not be read. Repair or remove it.`);
+  }
+  if (state.accounts.some((entry) => entry && entry.username === name)) {
+    throw new Error(`The account ${name} already exists.`);
+  }
+
+  // Verzeichnis zuerst: existiert es schon, ist der Name vergeben, auch wenn
+  // der Datensatz fehlt. Ohne diese Reihenfolge bekamme man ein Konto ohne
+  // Home und waere es nicht mehr los.
+  const home = resolveAccountHome(name, env);
+  if (existsSync(home)) throw new Error(`${home} already exists.`);
+  mkdirSync(home, { recursive: false, mode: 0o700 });
+
+  const now = timestamp();
+  const entry = {
+    username: name,
+    password: createDigest(password, options.params),
+    enabled: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  try {
+    writeWebAccounts([...state.accounts, entry], options);
+  } catch (error) {
+    // Kein halb angelegtes Konto: das Verzeichnis waere da, der Zugang nicht.
+    rmdirSync(home);
+    throw error;
+  }
+  clearVerificationCache();
+  return normalizeAccountEntry(entry, env);
+}
+
+/** Konto deaktivieren oder reaktivieren. Das Verzeichnis bleibt unberuehrt. */
+function setWebAccountEnabled(username, enabled, options = {}) {
+  const env = options.env ?? process.env;
+  const file = resolveWebAccountsFileFor(options);
+  const name = typeof username === "string" ? username.trim() : username;
+  const invalid = validateAccountName(name);
+  if (invalid) throw new Error(invalid);
+
+  const state = readWebAccounts(options);
+  if (state.status === "unreadable") {
+    throw new Error(`The omp-web account file at ${file} could not be read. Repair or remove it.`);
+  }
+  const index = state.accounts.findIndex((entry) => entry && entry.username === name);
+  if (index === -1) throw new Error(`No such account: ${name}`);
+
+  const next = [...state.accounts];
+  next[index] = { ...next[index], enabled: Boolean(enabled), updatedAt: timestamp() };
+  writeWebAccounts(next, options);
+  clearVerificationCache();
+  return normalizeAccountEntry(next[index], env);
+}
+
+/** Neues Passwort fuer ein bestehendes Konto. */
+function setWebAccountPassword(username, password, options = {}) {
+  const env = options.env ?? process.env;
+  const file = resolveWebAccountsFileFor(options);
+  const name = typeof username === "string" ? username.trim() : username;
+  const invalidName = validateAccountName(name);
+  if (invalidName) throw new Error(invalidName);
+  const invalidPassword = validatePassword(password);
+  if (invalidPassword) throw new Error(invalidPassword);
+
+  const state = readWebAccounts(options);
+  if (state.status === "unreadable") {
+    throw new Error(`The omp-web account file at ${file} could not be read. Repair or remove it.`);
+  }
+  const index = state.accounts.findIndex((entry) => entry && entry.username === name);
+  if (index === -1) throw new Error(`No such account: ${name}`);
+
+  const next = [...state.accounts];
+  next[index] = {
+    ...next[index],
+    password: createDigest(password, options.params),
+    updatedAt: timestamp(),
+  };
+  writeWebAccounts(next, options);
+  clearVerificationCache();
+  return normalizeAccountEntry(next[index], env);
+}
+
+/**
+ * Ein Konto anhand seiner Zugangsdaten finden.
+ *
+ * Liefert `null` bei falschem Namen, falschem Passwort und deaktiviertem Konto
+ * — fuer den Anrufer ist das ein und derselbe Fall. `enabled` wird *vor* dem
+ * scrypt geprueft, damit ein deaktiviertes Konto keine CPU-Zyklen kostet, und
+ * trotzdem mit derselben Verzoegerung beantwortet wird wie ein falsches
+ * Passwort (das regelt die Login-Route, die das hier aufruft).
+ */
+function findWebAccount(username, options = {}) {
+  if (typeof username !== "string" || username.length === 0) return null;
+  const state = readWebAccounts(options);
+  if (state.status !== "ok") return null;
+
+  const entry = state.accounts.find((candidate) => candidate && candidate.username === username);
+  if (!entry || entry.enabled === false) return null;
+  if (!isUsableDigest(entry.password)) return null;
+  return entry;
+}
+
+/**
  * Store a new password and turn the lock on.
  *
  * Any pending recovery code is dropped: whoever set this password no longer
@@ -612,26 +951,41 @@ function consumeRecoveryCode(code, password, options = {}) {
 }
 
 module.exports = {
+  ACCOUNT_NAME_MAX_LENGTH,
+  DEFAULT_WEB_ADMIN_USERNAMES,
   DEFAULT_WEB_AUTH_USERNAME,
   MIN_PASSWORD_LENGTH,
   RECOVERY_CODE_TTL_MS,
   RECOVERY_MAX_ATTEMPTS,
+  WEB_ACCOUNTS_FILENAME,
   WEB_AUTH_FILENAME,
   WEB_AUTH_USERNAME,
   clearVerificationCache,
   clearWebPassword,
   consumeRecoveryCode,
   createDigest,
+  createWebAccount,
+  findWebAccount,
   getWebAuthStatus,
+  isAdminUsername,
   issueRecoveryCode,
+  listWebAccounts,
   normalizeRecoveryCode,
+  readWebAccounts,
   readWebAuthState,
+  resolveAccountHome,
+  resolveAdminUsernames,
   resolveAgentDir,
+  resolveHomeRoot,
+  resolveWebAccountsFile,
   resolveWebAuthFile,
   resolveWebAuthPolicy,
+  setWebAccountEnabled,
+  setWebAccountPassword,
   setWebPassword,
   setWebPasswordEnabled,
   setWebUsername,
+  validateAccountName,
   validatePassword,
   validateUsername,
   verifyDigest,

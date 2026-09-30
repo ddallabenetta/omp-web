@@ -2,10 +2,14 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { statSync } from "node:fs";
 import {
   DEFAULT_WEB_AUTH_USERNAME,
+  findWebAccount,
+  isAdminUsername,
   readWebAuthState,
+  resolveAdminUsernames,
   resolveWebAuthFile,
   resolveWebAuthPolicy,
   verifyWebPassword,
+  type WebAuthPolicy,
   type WebAuthStoreOptions,
 } from "../bin/web-auth-store.js";
 
@@ -148,21 +152,105 @@ export function isValidBasicAuthorization(
 }
 
 /**
+ * Wer hinter einem Request steht.
+ *
+ * `isAdmin` bedeutet: darf fremde Verzeichnisse beschreiben. Das ist eine
+ * bewusste Entscheidung des Betreibers, kein Versehen — siehe
+ * `DEFAULT_WEB_ADMIN_USERNAMES` in `bin/web-auth-store.js`. Ein kompromittiertes
+ * Admin-Passwort ist damit eine Kompromittierung des Hosts, weil der Prozess
+ * ohne uid-Wechsel als ein Benutzer laeuft.
+ */
+export interface WebIdentity {
+  username: string;
+  isAdmin: boolean;
+}
+
+/** Account-Namen, die Admin sind. `OMP_WEB_ADMINS` (kommagetrennt) ueberschreibt die Vorgabe. */
+export const ADMIN_USERNAMES = resolveAdminUsernames();
+
+/**
+ * Ist dieser Name ein Admin?
+ *
+ * Bewusst ein Re-Export der Store-Funktion, nicht eine eigene Kopie: die Liste
+ * gehoert der Installation, und ein zweiter Ort, an dem sie gepflegt wird, ist
+ * ein Ort, an dem sie veraltet.
+ */
+export { isAdminUsername };
+
+/**
+ * Pruefe Anmeldedaten und liefere die Identitaet dahinter.
+ *
+ * Zwei Quellen, in dieser Reihenfolge:
+ *   1. Ein Konto aus `omp-web-accounts.json`. Das ist der Mehrbenutzerpfad und
+ *      der Grund, warum diese Funktion ueberhaupt Identitaet liefert.
+ *   2. Der Einzelbenutzer-Store `omp-web-auth.json` (bzw. `OMP_WEB_PASSWORD`).
+ *      Der Name ist fest, er wird `getExpectedUsername()` entnommen, und er ist
+ *      Admin, falls er in der Admin-Liste steht — sonst waare die bestehende
+ *      Installation nach dem Update komplett handlungsunfaehig.
+ *
+ * Liefert `null` bei falschem Namen, falschem Passwort und abgeschaltetem
+ * Konto. Der Aufrufer kann die drei Faelle nicht unterscheiden, und das soll er
+ * auch nicht: jedes andere Verhalten ist eine Oracle-Frage an einen Angreifer.
+ */
+export function verifyCredential(
+  username: string,
+  password: string,
+  options: WebAuthStoreOptions = {},
+): WebIdentity | null {
+  const env = options.env ?? process.env;
+  if (typeof username !== "string" || username.length === 0) return null;
+  if (typeof password !== "string" || password.length === 0) return null;
+
+  const account = findWebAccount(username, options);
+  if (account) {
+    // Das Konto-Digest wird wie ein normaler Store-Eintrag geprueft. Der
+    // synthetische `Policy` traegt nur den Digest, den `verifyWebPassword`
+    // braucht; `file` ist hierbei nur ein Platzhalter fuer den Cache-Key und
+    // wird nirgends gelesen.
+    const policy: WebAuthPolicy = { mode: "stored", digest: account.password, file: options.file ?? "" };
+    if (!verifyWebPassword(password, { ...options, policy })) return null;
+    return { username: account.username, isAdmin: isAdminUsername(account.username, env) };
+  }
+
+  const legacy = getExpectedUsername(env);
+  if (!secretsEqual(username, legacy)) return null;
+
+  const policy = resolveWebAuthPolicy(options);
+  if (policy.mode !== "environment" && policy.mode !== "stored") return null;
+  if (!verifyWebPassword(password, { ...options, policy })) return null;
+  return { username: legacy, isAdmin: isAdminUsername(legacy, env) };
+}
+
+/**
  * Authorize one request against whichever credential is in force — the
- * `OMP_WEB_PASSWORD` environment variable, or the hashed credential written by
- * the settings panel and `omp-web --authenticated`.
+ * `OMP_WEB_PASSWORD` environment variable, the hashed credential written by
+ * the settings panel, or one of the accounts in `omp-web-accounts.json`.
+ *
+ * The decision is a tagged union rather than the bare string it used to be, so
+ * that the identity travels with the verdict. A caller that only wants to know
+ * "may this through" still has to look at `.decision`, which means the string
+ * cannot be compared by accident.
  */
 export function authorizeWebRequest(
   authorization: string | null,
   options: WebAuthStoreOptions = {},
-): WebAuthDecision {
+): { decision: WebAuthDecision; identity: WebIdentity | null } {
   const policy = resolveWebAuthPolicy(options);
-  if (policy.mode === "open") return "allow";
-  if (policy.mode === "unavailable") return "unavailable";
+  if (policy.mode === "unavailable") return { decision: "unavailable", identity: null };
 
   const credentials = parseBasicCredentials(authorization);
-  if (!credentials || !secretsEqual(credentials.username, OMP_WEB_AUTH_USERNAME)) {
-    return "unauthorized";
+  if (credentials) {
+    const identity = verifyCredential(credentials.username, credentials.password, options);
+    if (identity) return { decision: "allow", identity };
+    // A wrong password against a *locked* server is a failed login. Against an
+    // unlocked one it is a request that happens to carry a stale header.
+    if (policy.mode !== "open") return { decision: "unauthorized", identity: null };
+    return { decision: "allow", identity: null };
   }
-  return verifyWebPassword(credentials.password, { ...options, policy }) ? "allow" : "unauthorized";
+
+  // Ohne `Authorization`-Header ist der Server entweder offen oder es wird die
+  // Session-Cookie geprueft. Im zweiten Fall uebernimmt `proxy.ts` die Identitaet
+  // aus dem Cookie, also bleibt sie hier `null`.
+  if (policy.mode === "open") return { decision: "allow", identity: null };
+  return { decision: "unauthorized", identity: null };
 }

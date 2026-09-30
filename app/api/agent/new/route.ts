@@ -3,6 +3,8 @@ import { parseConfiguredThinkingLevel as parseOmpThinkingLevel, type ConfiguredT
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
+import { isWritePathAllowed } from "@/lib/write-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { startRpcSession } from "@/lib/rpc-manager";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
@@ -49,8 +51,25 @@ export async function POST(req: Request) {
           : {}),
       }, { status: 400 });
     }
-    const allowedRoots = await getAllowedFileRoots();
+    // The cwd comes from the request body, so the caller picks it. The decision
+    // is made from the identity only, resolved once here from the header that
+    // `proxy.ts` set after checking credentials. A missing identity is a
+    // refusal, never a fallback to the service's own account.
+    const identity = getRequestIdentity(req.headers);
+    if (!identity) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    const allowedRoots = await getAllowedFileRoots(identity);
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    // Starting a session makes the agent *write* into the cwd: it creates
+    // session files, writes history, runs tools. Being allowed to read a
+    // directory is therefore not enough to be allowed to work in one, so the
+    // cwd has to clear the write boundary too.
+    if (!(await isWritePathAllowed(cwd, { mustExist: true }, identity))) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
@@ -74,7 +93,9 @@ export async function POST(req: Request) {
     // Keep the files-route allowed-roots cache (see app/api/files/[...path]/route.ts)
     // in sync so the new cwd is immediately readable via /api/files. Without this,
     // a file request under a brand-new cwd would 403 for up to the cache TTL.
-    allowFileRoot(cwd);
+    // Scoped to this identity: an un-scoped grant would add the cwd to a
+    // process-wide bucket that every other account reads too.
+    allowFileRoot(cwd, identity);
     invalidateSessionListCache();
 
     const state = await session.send({ type: "get_state" }) as {

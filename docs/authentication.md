@@ -45,6 +45,18 @@ The variable overrides the stored credential completely: while it is set, the
 settings panel is read-only and recovery has nothing to reset. Leaving it unset
 or empty hands control back to the stored credential.
 
+One consequence is worth stating plainly, because the failure is quiet: while
+`OMP_WEB_PASSWORD` is set, **there is exactly one account** — the username
+resolved below. Any other name is not a second user with a wrong password, it
+is not an account at all, and it is refused the same way a wrong password is.
+Measured against `authorizeWebRequest`: `omp` with the right password yields
+`{decision: "allow", identity: {username: "omp", isAdmin: true}}`, while `pi`
+and `bob` with that same password both yield `{decision: "unauthorized",
+identity: null}`.
+
+So `OMP_WEB_PASSWORD` is a single-credential door, not a multi-user
+configuration. Several accounts require the accounts file instead.
+
 ## The username
 
 The username is not a secret, but it is part of the credential and is checked
@@ -137,6 +149,12 @@ IP literals, the bind hostname, and the names listed in
 `OMP_WEB_ALLOWED_HOSTS` (exact names, or wildcard patterns like
 `*.example.com`); cross-site browser requests are rejected outright. Those
 checks run before authentication and apply to `/recover` too.
+
+And once several accounts exist, a per-account boundary around the terminal
+protects the route, not the shell: the process runs as one user and the spawned
+shell gets no `uid`/`gid` switch, so anyone holding an open terminal can read
+anything that account can read. Per-account terminals are bookkeeping, not
+containment.
 
 ## Sessions and what ends them
 

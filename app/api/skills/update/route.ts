@@ -5,6 +5,7 @@ import type { SkillInstallScope } from "@/lib/api-types";
 import { buildSkillUpdateArgs } from "@/lib/skill-updates";
 import { loadSkillsWithInstallInfo } from "@/lib/skills-service";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity, isAdminIdentity } from "@/lib/request-identity";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,10 @@ export async function POST(req: Request) {
       package?: unknown;
       scope?: unknown;
     };
+    const identity = getRequestIdentity(req.headers);
+    if (identity === null) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
     const pkg = typeof body.package === "string" ? body.package.trim() : "";
     const scope = body.scope === "global" || body.scope === "project"
@@ -31,7 +36,14 @@ export async function POST(req: Request) {
     if (!cwd || !pkg || !scope) {
       return NextResponse.json({ error: "cwd, package, and scope are required" }, { status: 400 });
     }
-    const allowedRoots = await getAllowedFileRoots();
+    // Ein globales Update schreibt in den gemeinsamen Skill-Bestand. Dieselbe
+    // Entscheidung wie in `install`: der Bestand ist global, also veraendert ihn
+    // nur, wer dafuer verantwortlich ist. Fuer `scope: "project"` greift
+    // stattdessen die Pfadgrenze, und die ist je Konto verschieden.
+    if (scope === "global" && !isAdminIdentity(identity)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+    const allowedRoots = await getAllowedFileRoots(identity);
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -42,7 +54,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { skills } = await loadSkillsWithInstallInfo(cwd);
+    const { skills } = await loadSkillsWithInstallInfo(cwd, getRequestIdentity(req.headers));
     const skill = skills.find(
       (item) => item.install?.package === pkg && item.install.scope === scope,
     );
@@ -59,7 +71,7 @@ export async function POST(req: Request) {
       env: getSafeNpxEnv({ FORCE_COLOR: "0" }),
     });
 
-    const refreshed = await loadSkillsWithInstallInfo(cwd);
+    const refreshed = await loadSkillsWithInstallInfo(cwd, getRequestIdentity(req.headers));
     const updatedSkill = refreshed.skills.find(
       (item) => item.install?.package === pkg && item.install.scope === scope,
     );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { encodeFilePathForApi, getFileDirectory } from "@/lib/file-paths";
 import { isImagePath } from "@/lib/file-types";
 import { copyText } from "@/lib/clipboard";
@@ -224,26 +225,53 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenIm
   const [draft, setDraft] = useState("");
   // Zielauswahl fuer Copy/Move. Sie lebt im Menue und nicht im aufrufenden
   // Explorer: das Menue ist der einzige Ort, der Quelle (`target.path`) und
-  // Absicht (`kind`) kennt, und der Dialog laeuft ohnehin ueber dem Panel
-  // (Backdrop z-index 1100 gegen Menue 320), sodass kein Portal noetig ist.
+  // Absicht (`kind`) kennt.
   const [transfer, setTransfer] = useState<{ kind: TransferKind; busy: boolean } | null>(null);
+  // Das Menue haengt an `document.body`, nicht am aufrufenden Explorer. Grund
+  // ist das Koordinatensystem, nicht die Stapelebene: `position: fixed` richtet
+  // sich nach dem Bezugssystem des Vorfahren, und jeder Vorfahre mit `transform`,
+  // `filter`, `backdrop-filter`, `perspective`, `contain` oder `will-change`
+  // eroeffnet ein eigenes. Im grossen Explorer-Fenster tut das bereits der
+  // Backdrop (`backdrop-filter: blur(8px)`, `FileExplorerWindow.module.css:75`)
+  // und der Panel-Animation-Nachlauf (`omp-modal-panel` endet auf
+  // `transform: scale(1) translateY(0)`, haelt den Wert per `both` dauerhaft).
+  // `left`/`top` waeren dann Koordinaten RELATIV ZU DIESEM FENSTER statt zum
+  // Viewport, und `window.innerWidth` waere die falsche Bezugsbreite. Das
+  // Menue stuende dann um genau den Fensterrand daneben — 5vh/5vw plus 1px
+  // Rahmen, im gemessenen Fall 48px in der Breite und 49px in der Hoehe.
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => {
+    setPortalTarget(document.body);
+  }, []);
+
   // Erst messen, dann setzen: der Layout-Effekt laeuft vor dem Paint, das
   // Panel erscheint also direkt an seiner endgueltigen Position. Die Abhaengig-
   // keit von `phase` faengt den Groessenwechsel der Formularschritte ein.
+  //
+  // Gemessen wird `offsetWidth`/`offsetHeight`, nicht `getBoundingClientRect()`:
+  // sobald das Panel am `body` haengt, ist es viewport-relativ und beide Groessen
+  // sind identisch — aber die Rechteckmasse eines fixierten Nachfahren eines
+  // transformierten Vorfahren liefern gezeichnete Masse, und nur darum geht es
+  // hier: die Klemme rechnet in derselben Einheit wie `window.innerWidth`.
   useLayoutEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
-    const { width, height } = panel.getBoundingClientRect();
+    const width = panel.offsetWidth;
+    const height = panel.offsetHeight;
     setPlacement({
       left: Math.min(Math.max(target.x, MENU_MARGIN), Math.max(MENU_MARGIN, window.innerWidth - width - MENU_MARGIN)),
       top: Math.min(Math.max(target.y, MENU_MARGIN), Math.max(MENU_MARGIN, window.innerHeight - height - MENU_MARGIN)),
     });
-  }, [phase, target.x, target.y]);
+    // `portalTarget` gehoert in die Abhaengigkeiten, weil das Panel erst im
+    // zweiten Durchlauf existiert: im ersten liefert `if (!portalTarget)
+    // return null` nichts, `panelRef.current` waere also noch null. Ohne diese
+    // Abhaengigkeit bliebe `placement` dauerhaft null und die Klemme liefte nie.
+  }, [phase, portalTarget, target.x, target.y]);
 
   useLayoutEffect(() => {
     if (phase === "root") {
@@ -258,7 +286,12 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenIm
     // Die Bestaetigung startet auf "Abbrechen" und nicht auf dem roten Knopf,
     // damit ein gewohnheitsmaessiges Enter nichts loescht.
     if (phase === "confirm-delete") cancelRef.current?.focus();
-  }, [phase]);
+    // `portalTarget` in den Abhaengigkeiten, weil die Refs erst im zweiten
+    // Durchlauf belegt sind: im ersten liefert `if (!portalTarget) return null`
+    // noch kein Panel, und der Fokus bliebe auf dem `body` stehen — die
+    // Tastaturbedienung des Menues hinge an einem Element, das den Fokus nie
+    // bekaem.
+  }, [phase, portalTarget]);
 
   useEffect(() => {
     // Solange der Ziel-Dialog offen ist, gehoeren Escape, Klick-daneben und
@@ -459,7 +492,13 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenIm
         ? t("files.contextDelete")
         : t("files.contextLabel", { name: target.name });
 
-  return (
+  // Ohne Portal laeuft das Panel nicht ueber dem Fenster, sondern in dessen
+  // Koordinatensystem (Begruendung an `portalTarget`). Der Dialog darueber ist
+  // ein Geschwister und damit von derselben Sache betroffen, sitzt aber ohnehin
+  // ueber dem Menue.
+  if (!portalTarget) return null;
+
+  return createPortal(
     <>
       <div
       ref={panelRef}
@@ -558,8 +597,8 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenIm
 
       {transfer && (
         // Der Dialog ist ein Geschwister des Panels, nicht ein Kind: nur so
-        // liegt sein Backdrop (z-index 1100) ueber dem Menue (320) und nicht
-        // in dessen Innenleben, das auf Zeilenhoehe und Tastaturfluss traint.
+        // liegt sein Backdrop (z-index 1100) ueber dem Menue und nicht in
+        // dessen Innenleben, das auf Zeilenhoehe und Tastaturfluss traint.
         <FileBrowserDialog
           open
           title={transfer.kind === "move"
@@ -572,7 +611,8 @@ export function FileContextMenu({ target, onClose, onMutated, onNotify, onOpenIm
           onConfirm={handleTransferConfirm}
         />
       )}
-    </>
+    </>,
+    portalTarget,
   );
 }
 

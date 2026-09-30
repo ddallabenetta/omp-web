@@ -3,57 +3,82 @@ import path from "path";
 import { normalizeSlashes } from "./allowed-roots";
 import { isExistingPathWithinRoots, isPathWithinRoots } from "./path-security";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "./file-access";
+import type { WebIdentity } from "./request-identity";
 
 /**
- * Write access, deliberately narrower than read access.
+ * Write access, deliberately narrower than read access, and per identity.
  *
- * `getAdditionalAllowedRoots()` includes `/` unconditionally so the explorer
- * breadcrumb and the Up button can reach the filesystem root. That is fine for
- * browsing — the OS refuses a read the process has no permission for, so the
- * allowlist is not what stops you there. It stops nothing at all for a *write*.
- * `renameSync("/etc/hosts", "/tmp/x")` needs write permission on both sides and
- * no read permission on either, so a write guard that reused the read
- * allowlist would hand out arbitrary-write on every path the service can
- * write, with a button on it.
+ * The read allowlist has an admin-only root of `/` (so the explorer breadcrumb
+ * and the Up button can reach the filesystem root). That is a *navigation*
+ * root, and it is not made safe by the OS: the service runs as one account, so
+ * the kernel only ever sees that account and hands over every file it can read.
+ * A root of `/` makes `isPathWithinRoots` true for every absolute path, so for
+ * an admin the read allowlist narrows nothing at all. (Verified against the
+ * real function — with `{"/"}` it accepts `/etc/passwd` and
+ * `/proc/self/environ`.)
+ *
+ * It stops nothing at all for a *write*. `renameSync("/etc/hosts", "/tmp/x")`
+ * needs write permission on both sides and no read permission on either, so a
+ * write guard that reused the read allowlist would hand out arbitrary-write on
+ * every path the service can write, with a button on it.
  *
  * So this module builds its own root set from the parts of the read allowlist
  * that name an actual project, and never inherits `/`:
  *
- * - a path inside any omp session cwd or project root is writable;
+ * - a path inside any session cwd or project root of *this* identity is
+ *   writable;
  * - a path inside `OMP_WEB_ALLOWED_ROOTS` is writable, because an operator set
- *   it explicitly;
+ *   it explicitly (admins only — it is in the admin branch of the read set);
  * - the home directory itself is NOT writable, only what is below a project in
  *   it — a bare home root would re-open the same hole one level down;
  * - `/` and every other ancestor of a project root is NOT writable.
  *
  * Everything is resolved through realpath before the comparison, so a symlink
  * pointing out of a project cannot be used to write outside it.
+ *
+ * Every function takes the identity explicitly and none of them has a default.
+ * A default here would be a silent privilege grant the first time somebody
+ * forgets the argument, and these are the functions a write goes through.
  */
 declare global {
-  // Mirrors __ompAllowedRootsCache, but for the narrower write set.
-  var __ompWriteRootsCache: { roots: Set<string>; expiresAt: number } | undefined;
+  // Mirrors __ompAllowedRootsCache, but for the narrower write set, and keyed
+  // by identity so one account's writable roots are not another's.
+  var __ompWriteRootsCache: Map<string, { roots: Set<string>; expiresAt: number }> | undefined;
 }
 
 const WRITE_ROOTS_TTL_MS = 5_000;
+
+function writableRootsCache(): Map<string, { roots: Set<string>; expiresAt: number }> {
+  if (!globalThis.__ompWriteRootsCache) {
+    globalThis.__ompWriteRootsCache = new Map<string, { roots: Set<string>; expiresAt: number }>();
+  }
+  return globalThis.__ompWriteRootsCache;
+}
 
 function isWindowsAbsolutePath(filePath: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("\\\\") || filePath.startsWith("//");
 }
 
 /**
- * Roots a write may land in. Built from the same session scan the read
- * allowlist uses, minus the always-on `/`.
+ * Roots a write may land in for `identity`, minus the always-on `/`.
+ *
+ * The cache is keyed by identity: a shared set would let one account's
+ * projects become another's writable roots.
  */
-export async function getWritableRoots(): Promise<Set<string>> {
+export async function getWritableRoots(identity: WebIdentity | null): Promise<Set<string>> {
+  if (!identity) return new Set<string>();
+
+  const key = `${identity.username}\u0000${identity.isAdmin ? "admin" : "user"}`;
   const now = Date.now();
-  const cached = globalThis.__ompWriteRootsCache;
+  const cache = writableRootsCache();
+  const cached = cache.get(key);
   if (cached && cached.expiresAt > now) return cached.roots;
 
   // The read allowlist already unions session cwds, project roots, the
   // omp-cwd-* directories and OMP_WEB_ALLOWED_ROOTS — plus `/`. Taking it as
   // the starting point and dropping the filesystem root reproduces the first
   // four exactly, without duplicating the session scan.
-  const readRoots = await getAllowedFileRoots();
+  const readRoots = await getAllowedFileRoots(identity);
   const roots = new Set<string>();
   for (const root of readRoots) {
     const resolved = path.resolve(normalizeSlashes(root));
@@ -65,7 +90,7 @@ export async function getWritableRoots(): Promise<Set<string>> {
     roots.add(resolved);
   }
 
-  globalThis.__ompWriteRootsCache = { roots, expiresAt: now + WRITE_ROOTS_TTL_MS };
+  cache.set(key, { roots, expiresAt: now + WRITE_ROOTS_TTL_MS });
   return roots;
 }
 
@@ -81,9 +106,10 @@ export async function getWritableRoots(): Promise<Set<string>> {
  */
 export async function isWritePathAllowed(
   target: string,
-  options: { mustExist: boolean }
+  options: { mustExist: boolean },
+  identity: WebIdentity | null
 ): Promise<boolean> {
-  const roots = await getWritableRoots();
+  const roots = await getWritableRoots(identity);
   if (roots.size === 0) return false;
 
   const absolute = path.resolve(normalizeSlashes(target));
@@ -126,15 +152,16 @@ export interface WriteAuthorization {
 export async function authorizeTransfer(
   source: string,
   destination: string,
-  mode: "move" | "copy"
+  mode: "move" | "copy",
+  identity: WebIdentity | null
 ): Promise<WriteAuthorization> {
-  if (!(await isExistingFilePathAllowed(source, await getAllowedFileRoots()))) {
+  if (!(await isExistingFilePathAllowed(source, await getAllowedFileRoots(identity)))) {
     return { ok: false, reason: "not-allowed", source, destination };
   }
-  if (mode === "move" && !(await isWritePathAllowed(source, { mustExist: true }))) {
+  if (mode === "move" && !(await isWritePathAllowed(source, { mustExist: true }, identity))) {
     return { ok: false, reason: "source-not-writable", source, destination };
   }
-  if (!(await isWritePathAllowed(destination, { mustExist: false }))) {
+  if (!(await isWritePathAllowed(destination, { mustExist: false }, identity))) {
     return { ok: false, reason: "destination-not-writable", source, destination };
   }
   return { ok: true, source, destination };

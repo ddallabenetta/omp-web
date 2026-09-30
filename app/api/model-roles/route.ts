@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { resolve } from "path";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { getOmpRuntime, getSettingsForCwd } from "@/lib/omp-runtime";
 import { listModelRoles, writeModelRole, type ModelRoleScope } from "@/lib/model-roles";
 import { resolveVisibleModels } from "@/lib/model-scope";
@@ -9,10 +10,15 @@ import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security"
 
 export const dynamic = "force-dynamic";
 
-async function requireAllowedCwd(rawCwd: string | null): Promise<{ cwd: string } | { error: NextResponse }> {
+async function requireAllowedCwd(
+  rawCwd: string | null,
+  req: Request
+): Promise<{ cwd: string } | { error: NextResponse }> {
   if (!rawCwd) return { error: NextResponse.json({ error: "cwd required" }, { status: 400 }) };
   const cwd = resolve(rawCwd);
-  const allowedRoots = await getAllowedFileRoots();
+  // `cwd` is a query parameter, so the caller chooses it. The allowlist it is
+  // checked against comes from the identity alone.
+  const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
     return { error: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
@@ -21,7 +27,7 @@ async function requireAllowedCwd(rawCwd: string | null): Promise<{ cwd: string }
 
 // GET /api/model-roles?cwd=<path> — every role omp knows, with its assignment.
 export async function GET(req: Request) {
-  const result = await requireAllowedCwd(new URL(req.url).searchParams.get("cwd"));
+  const result = await requireAllowedCwd(new URL(req.url).searchParams.get("cwd"), req);
   if ("error" in result) return result.error;
 
   try {
@@ -57,7 +63,7 @@ export async function PUT(req: Request) {
       selector?: string | null;
       scope?: ModelRoleScope;
     };
-    const result = await requireAllowedCwd(body.cwd ?? null);
+    const result = await requireAllowedCwd(body.cwd ?? null, req);
     if ("error" in result) return result.error;
 
     const role = body.role?.trim();

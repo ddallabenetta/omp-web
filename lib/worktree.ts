@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, realpathSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { promisify } from "util";
 import { allowFileRoot } from "./allowed-roots";
+import type { WebIdentity } from "./request-identity";
 
 const execFileAsync = promisify(execFile);
 
@@ -170,7 +171,11 @@ function sanitizeBranchForDir(branch: string): string {
   return branch.replace(/[\/\\:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-export async function addWorktree(cwd: string, branch: string): Promise<{ path: string; branch: string }> {
+export async function addWorktree(
+  cwd: string,
+  branch: string,
+  identity: WebIdentity | null
+): Promise<{ path: string; branch: string }> {
   const trimmed = branch.trim();
   if (!trimmed) throw new Error("Branch name is required");
 
@@ -204,7 +209,11 @@ export async function addWorktree(cwd: string, branch: string): Promise<{ path: 
     throw new Error(extractGitError(error));
   }
 
-  allowFileRoot(worktreePath);
+  // The grant is scoped to the identity that asked for the worktree. Without
+  // one it lands in the unclaimed bucket, which only admins read — an
+  // unscoped grant here would make the new worktree browsable for every
+  // account on the process.
+  allowFileRoot(worktreePath, identity);
   invalidateProjectCache();
   return { path: worktreePath, branch: trimmed };
 }

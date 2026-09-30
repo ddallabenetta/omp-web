@@ -6,6 +6,7 @@ import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 import { loadSkillsWithInstallInfo } from "@/lib/skills-service";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity, isAdminIdentity } from "@/lib/request-identity";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
@@ -24,17 +25,40 @@ export async function GET(req: Request) {
   if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
 
   try {
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
-    return NextResponse.json(await loadSkillsWithInstallInfo(cwd));
+    return NextResponse.json(await loadSkillsWithInstallInfo(cwd, getRequestIdentity(req.headers)));
   } catch {
     return NextResponse.json({ error: "Unable to load skills" }, { status: 500 });
   }
 }
 
 // PATCH /api/skills — toggle disable-model-invocation on a SKILL.md file
+//
+// ### Warum das Schreibgeschuetzt ist und nicht pro Mandant getrennt
+//
+// Der Skill-Bestand bleibt **ein** Bestand, und das ist eine Entscheidung, kein
+// Versehen: eine `SKILL.md` ist Code, den alle Mandanten brauchen, und ein
+// Bestand, den jeder sieht, aber nur der Betreiber aendert, ist ein
+// gemeinsamer Bestand mit einem Verantwortlichen. Waere er pro Nutzer, wuerde
+// jeder Mandant einen anderen Satz Instruktionen bekommen — und der
+// Aufwand, denselben Bestand N-mal zu pflegen, waere auch dann nicht zu
+// rechtfertigen, wenn man die Mandantengrenze fuer sicher haelt.
+//
+// Der Preis dieser Entscheidung ist aber eine Grenze, die gezogen werden muss:
+// wer den gemeinsamen Code liest, darf ihn nicht auch umschreiben. Ein
+// Mandant, der `disable-model-invocation` in einer `SKILL.md` toggelt, schaltet
+// fuer **alle** ab, ob er will oder nicht. Deshalb ist der Schreibpfad an
+// `isAdminIdentity` gebunden, und zwar *vor* jeder Pfadpruefung: die
+// Pfadpruefung waere hier Tautologie, denn die Admin-Pruefung entscheidet
+// bereits.
+//
+// Fuer einen Nicht-Admin bleibt genau das uebrig, was ihm gehoert: eigene
+// Skills im eigenen Projektverzeichnis (`<cwd>/.omp/skills`) ueber die
+// `getAllowedFileRoots`-Pruefung, und Lesen des gemeinsamen Bestands ueber
+// GET. Beides ist bereits vorhanden und muss hier nichts erfunden werden.
 export async function PATCH(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
@@ -44,6 +68,14 @@ export async function PATCH(req: Request) {
   }
 
   try {
+    const identity = getRequestIdentity(req.headers);
+    if (identity === null) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+    if (!isAdminIdentity(identity)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
     const body = await req.json() as { filePath?: unknown; disableModelInvocation?: unknown };
     const filePath = typeof body.filePath === "string" ? body.filePath.trim() : "";
     const disableModelInvocation = body.disableModelInvocation;
@@ -68,7 +100,7 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "file must be a regular file" }, { status: 400 });
     }
 
-    const allowedRoots = new Set(await getAllowedFileRoots());
+    const allowedRoots = new Set(await getAllowedFileRoots(identity));
     allowedRoots.add(getAgentDir());
     // Globally installed skills live in ~/.agents/skills and are symlinked into
     // the agent's skills dir; isExistingFilePathAllowed resolves the symlink, so

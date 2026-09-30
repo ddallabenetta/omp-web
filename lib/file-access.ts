@@ -1,19 +1,17 @@
 import { readdirSync } from "fs";
 import { homedir } from "os";
 import path from "path";
-import { getAdditionalAllowedRoots, normalizeSlashes } from "./allowed-roots";
+import { getAdditionalAllowedRoots, getAllowedRootsCache, identityKey, normalizeSlashes } from "./allowed-roots";
 import { isExistingPathWithinRoots } from "./path-security";
 import { listAllSessions } from "./session-reader";
+import { getUserHome, type WebIdentity } from "./request-identity";
 export { allowFileRoot, normalizeSlashes } from "./allowed-roots";
 
-// Short-TTL cache for the allowed-roots set. Without this, every file list/read
+// Short-TTL cache of the allowed-roots set. Without this, every file list/read
 // request re-scans every pi session on disk just to check access. 5s is short
-// enough that newly-created cwds appear promptly; stored on globalThis so it
-// survives Next.js hot-reload.
-declare global {
-  var __ompAllowedRootsCache: { roots: Set<string>; expiresAt: number } | undefined;
-}
-
+// enough that newly-created cwds appear promptly. Keyed by identity, because
+// the set is per-identity now: a single cached union would hand one account the
+// roots of another.
 const ALLOWED_ROOTS_TTL_MS = 5_000;
 const WINDOWS_ABSOLUTE_RE = /^[a-zA-Z]:[\\/]/;
 
@@ -21,12 +19,29 @@ export function isWindowsAbsolutePath(filePath: string): boolean {
   return WINDOWS_ABSOLUTE_RE.test(filePath) || filePath.startsWith("\\\\") || filePath.startsWith("//");
 }
 
-export async function getAllowedFileRoots(): Promise<Set<string>> {
+/**
+ * The roots `identity` may read.
+ *
+ * The argument is mandatory in the type but nullable in fact: a request whose
+ * identity could not be established gets an empty set. That is the whole
+ * contract. `listAllSessions()` is *not* called in that case, because it
+ * returns every session on the machine including other tenants' — the
+ * unfiltered scan would rebuild the very root set the identity is there to
+ * narrow, and an empty result is the only genuinely safe one.
+ *
+ * Sessions are filtered by the same identity that gates the result, so another
+ * tenant's cwd never becomes a root here.
+ */
+export async function getAllowedFileRoots(identity: WebIdentity | null): Promise<Set<string>> {
+  if (!identity) return new Set<string>();
+
+  const key = identityKey(identity);
   const now = Date.now();
-  const cached = globalThis.__ompAllowedRootsCache;
+  const cache = getAllowedRootsCache();
+  const cached = cache.get(key);
   if (cached && cached.expiresAt > now) return cached.roots;
 
-  const sessions = await listAllSessions();
+  const sessions = await listAllSessions({ identity });
   const roots = new Set<string>();
   for (const s of sessions) {
     if (s.cwd) roots.add(normalizeSlashes(s.cwd));
@@ -36,19 +51,25 @@ export async function getAllowedFileRoots(): Promise<Set<string>> {
   }
 
   // Also allow ~/omp-cwd-* directories created by the default-cwd endpoint.
+  // Scanned in the *requesting* account's home, not `homedir()`: the service
+  // runs as one account, so scanning the process home handed every logged-in
+  // user the service account's scratch directories as browsable roots — a
+  // cross-tenant read that no identity check could catch afterwards, because by
+  // then the path was in the allowlist. For an admin the two coincide.
   try {
-    for (const name of readdirSync(homedir())) {
+    const ownHome = identity.isAdmin ? homedir() : getUserHome(identity);
+    for (const name of readdirSync(ownHome)) {
       if (/^omp-cwd-\d{8}$/.test(name)) {
-        roots.add(normalizeSlashes(path.join(homedir(), name)));
+        roots.add(normalizeSlashes(path.join(ownHome, name)));
       }
     }
   } catch {
-    // ignore if home is unreadable
+    // ignore if home is unreadable or does not exist
   }
 
-  for (const root of getAdditionalAllowedRoots()) roots.add(root);
+  for (const root of getAdditionalAllowedRoots(identity)) roots.add(root);
 
-  globalThis.__ompAllowedRootsCache = { roots, expiresAt: now + ALLOWED_ROOTS_TTL_MS };
+  cache.set(key, { roots, expiresAt: now + ALLOWED_ROOTS_TTL_MS });
   return roots;
 }
 

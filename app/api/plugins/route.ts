@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import type { InstalledPlugin } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import type {
   PluginDiagnostic,
@@ -139,7 +140,7 @@ export async function GET(req: Request) {
   if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
 
   try {
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -166,7 +167,7 @@ export async function POST(req: Request) {
     };
     if (!body.cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
     if (!body.action) return NextResponse.json({ error: "action required" }, { status: 400 });
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(getRequestIdentity(req.headers));
     if (!isExistingFilePathAllowed(body.cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

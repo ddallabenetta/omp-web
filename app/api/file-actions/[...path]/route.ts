@@ -9,6 +9,7 @@ import {
   isSameOrBelow,
   isWritePathAllowed,
 } from "@/lib/write-access";
+import { getRequestIdentity } from "@/lib/request-identity";
 
 export const dynamic = "force-dynamic";
 
@@ -108,6 +109,13 @@ export async function POST(
 
   try {
     const { path: segments } = await params;
+    // Resolved once, before any path from the URL or the body is looked at.
+    // Every handler below reaches `isWritePathAllowed`/`authorizeTransfer` with
+    // this value and nothing else, so the source path and the destination in
+    // the body cannot influence who is being authorized.
+    const identity = getRequestIdentity(request.headers);
+    if (!identity) return errorResponse("Access denied", 403);
+
     const source = filePathFromSegments(segments);
     const type = request.nextUrl.searchParams.get("type");
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
@@ -120,7 +128,7 @@ export async function POST(
       if (destinationExists(target)) {
         return errorResponse(`"${name}" already exists here`, 409);
       }
-      if (!(await isWritePathAllowed(target, { mustExist: false }))) {
+      if (!(await isWritePathAllowed(target, { mustExist: false }, identity))) {
         return errorResponse("Access denied", 403);
       }
       fs.mkdirSync(target);
@@ -135,7 +143,7 @@ export async function POST(
       if (destinationExists(destination)) {
         return errorResponse(`"${name}" already exists in this folder`, 409);
       }
-      const auth = await authorizeTransfer(source, destination, "move");
+      const auth = await authorizeTransfer(source, destination, "move", identity);
       if (!auth.ok) return errorResponse("Access denied", 403, { reason: auth.reason });
       // A directory cannot be renamed into itself or a descendant; the kernel
       // would reject it, but with an error the user cannot act on.
@@ -159,7 +167,7 @@ export async function POST(
         return errorResponse(`"${path.basename(source)}" already exists at the destination`, 409);
       }
 
-      const auth = await authorizeTransfer(source, destination, type);
+      const auth = await authorizeTransfer(source, destination, type, identity);
       if (!auth.ok) return errorResponse("Access denied", 403, { reason: auth.reason });
 
       // Copying or moving a folder into itself recurses until the disk is
@@ -222,7 +230,12 @@ export async function DELETE(
     const { path: segments } = await params;
     const target = filePathFromSegments(segments);
 
-    if (!(await isWritePathAllowed(target, { mustExist: true }))) {
+    // Same rule as POST: the identity is the only input to the decision, the
+    // URL segment is only ever the thing being judged.
+    const identity = getRequestIdentity(request.headers);
+    if (!identity) return errorResponse("Access denied", 403);
+
+    if (!(await isWritePathAllowed(target, { mustExist: true }, identity))) {
       return errorResponse("Access denied", 403);
     }
 

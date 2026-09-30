@@ -27,6 +27,7 @@ import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
+import { isAdminIdentity, type WebIdentity } from "./request-identity";
 import { untrustedProjectSessionOptions } from "./project-trust";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
 import { readDefaultModelRole } from "./model-roles";
@@ -141,6 +142,13 @@ export interface RpcSessionStartOptions {
   toolNames?: string[];
   initialModel?: { provider: string; modelId: string };
   thinkingLevel?: ConfiguredThinkingLevel;
+  /**
+   * Der angemeldete Benutzername, dem die Session gehoert.
+   *
+   * Kein Admin-Flag: die Session gehoert auch einem Admin seinem eigenen Namen,
+   * nicht der Rolle. Die Admin-Ausnahme steht ausschliesslich im Filter.
+   */
+  owner?: string;
 }
 
 const CODING_TOOL_NAMES: Record<string, true> = Object.fromEntries(
@@ -1529,6 +1537,7 @@ export class AgentSessionWrapper {
 
 declare global {
   var __ompSessions: Map<string, AgentSessionWrapper> | undefined;
+  var __ompSessionOwners: Map<string, string> | undefined;
   var __ompStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
   var __ompStartingSessionCwds: Map<string, number> | undefined;
   var __ompRunningListeners: Set<(ids: string[]) => void> | undefined;
@@ -1543,6 +1552,61 @@ function getRegistry(): Map<string, AgentSessionWrapper> {
     process.once("SIGTERM", cleanup);
   }
   return globalThis.__ompSessions;
+}
+
+/**
+ * Wer hat die laufende Session gestartet?
+ *
+ * Eine Neben-Map und kein Feld auf dem Wrapper: die Registry ist ein
+ * `globalThis`-Objekt, das Tests direkt als `Map<string, AgentSessionWrapper>`
+ * setzen, und ein Wrapper ist an mehreren Stellen von Hand gebaut. Ein
+ * zusaetzliches Pflichtfeld auf dem Wrapper wuerde jeden dieser Aufbaustellen
+ * eine Aenderung aufzwingen und die Registrierung beim Aufruf vergessen lassen
+ * — ein fehlender Owner wuerde dann still durchfallen.
+ *
+ * Deshalb gilt hier: **kein Eintrag heisst nicht besitzbar.** Kein
+ * `?? "pi"`, kein Fallback. Eine Session aus einer aelteren Sitzung, deren
+ * Owner-Map es nicht ueberlebt hat, ist fuer niemanden sichtbar. Das ist
+ * die Richtung, in der ein Fehler unauffaellig ist, und die ist hier die
+ * sichere.
+ */
+function getOwnerMap(): Map<string, string> {
+  if (!globalThis.__ompSessionOwners) globalThis.__ompSessionOwners = new Map();
+  return globalThis.__ompSessionOwners;
+}
+
+function setSessionOwner(sessionId: string, owner: string): void {
+  getOwnerMap().set(sessionId, owner);
+}
+
+function forgetSessionOwner(sessionId: string): void {
+  getOwnerMap().delete(sessionId);
+}
+
+/** Besitzer einer Laufzeit-Session, oder `undefined` wenn keiner hinterlegt ist. */
+export function getRpcSessionOwner(sessionId: string): string | undefined {
+  return getOwnerMap().get(sessionId);
+}
+
+/**
+ * Besitzt `identity` diese Laufzeit-Session?
+ *
+ * Ein Admin besitzt alles. Fuer alle anderen gilt Gleichheit: wer die Session
+ * gestartet hat, ist der einzige, der sie sieht.
+ *
+ * `null` heisst hier bewusst NICHT "nicht angemeldet, also nichts sichtbar",
+ * sondern "kein Mandantenkontext" — die CLI, der Running-Broadcaster und die
+ * Prozess-Cleanup-Pfade kennen keinen Benutzer. Das entspricht der Regel, die
+ * auch `listAllSessions` befolgt: der Default filtert nicht, die ROUTE filtert.
+ *
+ * Der Schutz liegt deshalb in der ROUTE und nicht hier: wer von proxy.ts keinen
+ * Header bekommt, antwortet 403 und ruft diese Funktion nie auf. Eine Liste,
+ * die ein nicht angemeldeter Client sieht, kann es damit nicht geben.
+ */
+export function isRpcSessionVisibleTo(sessionId: string, identity: WebIdentity | null): boolean {
+  if (!identity) return true;
+  if (isAdminIdentity(identity)) return true;
+  return getOwnerMap().get(sessionId) === identity.username;
 }
 
 function getLocks(): Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> {
@@ -1601,10 +1665,13 @@ function runtimeMessageActivityMs(entry: SessionMessageEntry): number | undefine
  * the first JSONL flush until an assistant message exists, so an accepted new
  * prompt must temporarily be described from its in-memory SessionManager.
  */
-export function getRpcSessionInfos(): SessionInfo[] {
+export function getRpcSessionInfos(identity: WebIdentity | null = null): SessionInfo[] {
   const sessions: SessionInfo[] = [];
-  for (const session of getRegistry().values()) {
+  for (const [sessionKey, session] of getRegistry()) {
     if (!session.isAlive()) continue;
+    // Fremde Laufzeit-Sessions sind keine Frage der Liste, sondern gar nicht
+    // erst vorhanden. Der Admin sieht alles.
+    if (!isRpcSessionVisibleTo(sessionKey, identity)) continue;
 
     const manager = session.inner.sessionManager;
     const header = manager.getHeader();
@@ -1662,9 +1729,32 @@ export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
   return sessions.length;
 }
 
-export function getRunningRpcSessionIds(): string[] {
+/**
+ * Jede laufende Session-Id des Prozesses, ohne Besitzfilter.
+ *
+ * Nur fuer Aufrufer, die selbst filtern: der Aenderungs-Broadcast und
+ * Prozess-Cleanup. Eine Route nimmt {@link getRunningRpcSessionIds}, weil dort
+ * die Identitaet des Anfragenden bekannt ist.
+ */
+export function getAllRunningRpcSessionIds(): string[] {
   const ids = new Set<string>();
   for (const [sessionId, session] of getRegistry()) {
+    if (session.isRunning()) ids.add(session.sessionId || sessionId);
+  }
+  return [...ids];
+}
+
+/**
+ * Die laufenden Session-Ids, die `identity` sehen darf.
+ *
+ * Ohne Identitaet ist die Antwort "alles" — dieselbe Regel wie in
+ * {@link isRpcSessionVisibleTo}. Die ROUTE gibt bei fehlendem Header 403 und
+ * kommt hier nie ohne Identitaet an; wer filtern will, ruft mit Identitaet auf.
+ */
+export function getRunningRpcSessionIds(identity: WebIdentity | null = null): string[] {
+  const ids = new Set<string>();
+  for (const [sessionId, session] of getRegistry()) {
+    if (!isRpcSessionVisibleTo(sessionId, identity)) continue;
     if (session.isRunning()) ids.add(session.sessionId || sessionId);
   }
   return [...ids];
@@ -1696,6 +1786,13 @@ let lastRunningSnapshot = "";
 /**
  * Recompute the running-session-id set and, if it changed since the last
  * notification, broadcast it to subscribers.
+ *
+ * Der Broadcast laeuft ueber die ungefilterte Menge: das ist die
+ * Aenderungsmeldung des Prozesses, keine Antwort auf eine Anfrage. Jeder
+ * Abonnent filtert selbst ueber `getRunningRpcSessionIds(identity)`, denn was
+ * fuer den einen eine fremde Session ist, ist fuer den Admin seine eigene, und
+ * das kann sich nicht in einem prozess-globalen Broadcast entscheiden lassen.
+ * Der Listener bekommt deshalb alle Ids, und die Route filtert.
  */
 export function notifyRunningChange(): void {
   const listeners = getRunningListeners();
@@ -1705,7 +1802,7 @@ export function notifyRunningChange(): void {
     lastRunningSnapshot = "";
     return;
   }
-  const ids = getRunningRpcSessionIds();
+  const ids = getAllRunningRpcSessionIds();
   const snapshot = JSON.stringify([...ids].sort());
   if (snapshot === lastRunningSnapshot) return;
   lastRunningSnapshot = snapshot;
@@ -1851,8 +1948,19 @@ export async function startRpcSession(
       const realSessionFile = inner.sessionFile as string | undefined;
       if (realSessionFile) cacheSessionPath(realSessionId, realSessionFile);
 
-      wrapper.onDestroy(() => registry.delete(realSessionId));
+      wrapper.onDestroy(() => {
+        registry.delete(realSessionId);
+        forgetSessionOwner(realSessionId);
+      });
       registry.set(realSessionId, wrapper);
+      // Der Besitz wird genau hier vergeben, in derselben Zeile, in der die
+      // Session sichtbar wird. Der Leerstring ist der Marker fuer "unbeansprucht":
+      // er wird bewusst geschrieben statt eines `if (owner)`, damit eine Session,
+      // die unter derselben Id neu registriert wird, keinen Besitzer aus ihrer
+      // Vorgaengerin erbt. Ein unbeanspruchter Besitz passt zu keinem
+      // Benutzernamen, also ist die Session fuer niemanden sichtbar — die
+      // Fehlrichtung, in der ein vergessenes Argument nicht still durchfaellt.
+      setSessionOwner(realSessionId, options.owner ?? "");
       wrapper.beginExtensionBinding({ forceEmptySystemPrompt: toolNames?.length === 0 });
 
       return { session: wrapper, realSessionId };

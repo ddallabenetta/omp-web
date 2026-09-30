@@ -16,6 +16,14 @@ export interface TerminalInfo {
   rows: number;
   createdAt: number;
   lastActivityAt: number;
+  /**
+   * Der angemeldete Benutzername, der die Shell gestartet hat.
+   *
+   * Teil des `TerminalInfo` und nicht nur des internen Records, weil die
+   * Route sie serialisiert und ein Besitz-Filter dann an einem Feld haengt,
+   * das in beiden Formen dasselbe ist.
+   */
+  owner: string;
 }
 
 interface TerminalRecord {
@@ -24,6 +32,17 @@ interface TerminalRecord {
   streams: Set<WritableStreamDefaultWriter<Uint8Array>>;
   pendingData: Buffer[];
 }
+
+/**
+ * Besitzer-Markierung fuer eine Shell ohne Angabe.
+ *
+ * Der Leerstring passt zu keinem Benutzernamen, also ist eine so markierte
+ * Shell fuer niemanden sichtbar — auch nicht fuer einen Admin, denn der
+ * Admin-Filter greift nur fuer einen *gesetzten* Besitz. Ein Aufruf von
+ * `spawn()` ohne `owner` erzeugt damit bewusst eine tote Shell statt einer,
+   * die in fremden Händen landet.
+ */
+const UNCLAIMED_OWNER = "";
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -71,7 +90,7 @@ export class TerminalManager {
   // but `script` is a standard Linux util that allocates a PTY for its child
   // and pipes the master side through stdin/stdout. That gives bash proper
   // line discipline, prompts that re-render on resize, and nested shells.
-  async spawn(cwd: string, cols = 80, rows = 24): Promise<TerminalInfo> {
+  async spawn(cwd: string, cols = 80, rows = 24, owner: string = UNCLAIMED_OWNER): Promise<TerminalInfo> {
     const isWindows = os.platform() === "win32";
     const shell = process.env.SHELL?.trim() || (isWindows ? "powershell.exe" : "bash");
     const id = randomUUID();
@@ -91,6 +110,13 @@ export class TerminalManager {
     const child = Bun.spawn({
       cmd,
       cwd,
+      // Bewusst OHNE `uid`/`gid`: der Prozess laeuft als ein Benutzer, und ein
+      // Wechsel wuerde eine eigene Mandantenentscheidung sein, die hier nicht
+      // getroffen wurde. Der Besitzfilter auf dieser Shell schuetzt daher nur
+      // die ROUTE, nicht die Shell — wer eine offene Shell hat, kann
+      // `cat /etc/shadow`, und die Pfadgrenze der Dateirouten gilt von innen
+      // nicht. Ein echter uid-Wechsel pro Nutzer waere der naechste Schritt,
+      // wenn das hier entschieden wird.
       env: {
         ...process.env,
         TERM: "xterm-256color",
@@ -114,6 +140,7 @@ export class TerminalManager {
       rows,
       createdAt: startedAt,
       lastActivityAt: startedAt,
+      owner,
     };
 
     const record: TerminalRecord = {
@@ -176,8 +203,29 @@ export class TerminalManager {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /** Nur die Shells, die `username` gestartet hat. */
+  listOwnedBy(username: string): TerminalInfo[] {
+    return this.list().filter((info) => info.owner === username);
+  }
+
+  /** Alle Shells — nur fuer einen Admin, der Entschreiber im Filter. */
+  listAll(): TerminalInfo[] {
+    return this.list();
+  }
+
   get(id: string): TerminalInfo | null {
     return this.terminals.get(id)?.info ?? null;
+  }
+
+  /**
+   * Besitzt `username` diese Shell?
+   *
+   * Der Admin-Zweig bleibt bewusst aussen: die Route entscheidet vor dem Aufruf,
+   * ob sie den Adminpfad nimmt, damit es an genau einer Stelle steht. Hier
+   * zaehlt nur Gleichheit, und ein Leerstring-Besitz passt zu keinem Namen.
+   */
+  isOwnedBy(id: string, username: string): boolean {
+    return this.terminals.get(id)?.info.owner === username;
   }
 
   async write(id: string, data: string): Promise<void> {

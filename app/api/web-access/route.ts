@@ -70,7 +70,14 @@ export async function PUT(req: Request) {
         // Carry `username` in the same atomic write so the panel can keep the
         // stored username in sync with the freshly-validated one. Omitting it
         // leaves any previously-stored username alone.
-        return statusResponse(setWebPassword(body.password, { username: body.username }));
+        //
+        // The narrowing is deliberate: `body` is `unknown` all the way from
+        // `req.json()`, and the store option is `string | undefined`. A
+        // non-string is dropped rather than forwarded — `setWebPassword` treats
+        // `undefined` as "keep what is stored", so a client that sends a number
+        // gets the existing username back instead of a stored `"42"`.
+        const username = typeof body.username === "string" ? body.username : undefined;
+        return statusResponse(setWebPassword(body.password, { username }));
       }
       case "set-username":
         // `setWebUsername` throws on validation failure with a useful message,
