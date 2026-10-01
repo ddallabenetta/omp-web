@@ -252,6 +252,7 @@ export const enLocale: LocalePlugin = {
     "files.explorerWindowTitle": "Explorer",
     "files.explorerWindowNoTab": "Click a file to open it here. Tabs stay inside this window.",
     "files.explorerWindowNewTab": "New tab",
+    "files.explorerWindowBackToTree": "Back to file tree",
     "files.explorerWindowEmptyTab": "Untitled",
     "files.explorerWindowPickFile": "This tab has no file yet. Click one in the tree, or type a path.",
     "files.explorerWindowOpenPath": "Open path",

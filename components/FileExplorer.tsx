@@ -195,6 +195,16 @@ const ROW_ACTION_RIGHT_IMAGE = 30;
 const ROW_ACTION_RIGHT_MENTION_FILE = 58;
 const ROW_ACTION_RIGHT_MENTION_DIR = 4;
 
+/**
+ * Id des festen Explorer-Tabs im grossen Fenster.
+ *
+ * Bewusst eine Konstante und nicht `file:${cwd}`: der Tab muss ueber Oeffnen
+ * und Schliessen des Fensters hinweg derselbe bleiben. Mit dem Pfad als Id
+ * waere er nach jedem Ordnerwechsel ein anderer, und `handleCloseTab` koennte
+ * ihn nicht an der Form, sondern nur an einem zufaelligen Vergleich erkennen.
+ */
+const EXPLORER_TAB_ID = "explorer:root";
+
 async function fetchEntries(dirPath: string): Promise<FileNode[]> {
   const encoded = encodeFilePathForApi(dirPath);
   const res = await fetch(`/api/files/${encoded}?type=list`);
@@ -673,8 +683,10 @@ function FileExplorerWindow({
    */
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const titleId = useId();
-  const [tabs, setTabs] = useState<FileTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [tabs, setTabs] = useState<FileTab[]>(() => [
+    { kind: "explorer", id: EXPLORER_TAB_ID, label: t("files.explorerWindowTitle"), filePath: "" },
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(EXPLORER_TAB_ID);
   // Zaehler fuer die Ids der leeren Tabs. Ein Ref und kein State, weil er
   // nichts anzeigt: er muss nur garantieren, dass zwei leere Tabs nie dieselbe
   // Id bekommen. `titleId` steht als Praefix davor, weil `useId` je
@@ -729,7 +741,14 @@ function FileExplorerWindow({
       // gesprungen, wuerde die Datei dem Tab entrissen, den der Nutzer
       // gerade ausgewahlt hat.
       const activeIndex = activeTabId === null ? -1 : prev.findIndex((tab) => tab.id === activeTabId);
-      const hasPlaceholder = activeIndex >= 0 && prev[activeIndex].filePath === "";
+      // Nur `kind: "file"` zaehlt als Platzhalter. Der Explorer-Tab hat auch
+      // ein leeres `filePath`, ist aber keiner: ohne diese Pruefung loeste sich
+      // ein Klick auf eine bereits geoeffnete Datei in sich selbst auf und
+      // riss den Explorer-Tab aus der Leiste — der Nutzer haette danach keinen
+      // Weg mehr zurueck in den Baum.
+      const hasPlaceholder = activeIndex >= 0
+        && prev[activeIndex].kind === "file"
+        && prev[activeIndex].filePath === "";
 
       if (hasPlaceholder) {
         // Die Datei ist an anderer Stelle schon offen. Ein befuellter Tab
@@ -783,6 +802,10 @@ function FileExplorerWindow({
   }, [currentDir, t, titleId]);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
+  // Der Baum erscheint genau dann, wenn sein eigener Tab vorne steht. Ohne
+  // aktiven Tab zaehlt das nicht mit: sonst waere nach dem Schliessen des
+  // letzten Datei-Tabs der Baum zurueck, obwohl kein Tab ihn mehr beschreibt.
+  const showExplorer = activeTab?.kind === "explorer";
 
   /**
    * Bewusst zwei getrennte Setter statt eines `setActiveTabId` *innerhalb*
@@ -794,6 +817,10 @@ function FileExplorerWindow({
    * immer die Liste, die der Nutzer gerade sieht. Muster aus `AppShell.tsx`.
    */
   const handleCloseTab = useCallback((tabId: string) => {
+    // Der Explorer-Tab ist der Rueckweg und wird nicht geschlossen. Ohne diese
+    // Zeile koennte ein Tastenkuerzel oder ein Rechte-Klick ihn entfernen, und
+    // dann gabe es keinen Weg mehr aus einer Datei heraus.
+    if (tabId === EXPLORER_TAB_ID) return;
     const next = tabs.filter((tab) => tab.id !== tabId);
     setTabs(next);
     setActiveTabId((current) => {
@@ -806,6 +833,10 @@ function FileExplorerWindow({
   }, [tabs]);
 
   const handleReorder = useCallback((tabId: string, beforeId: string) => {
+    // Der Explorer-Tab bleibt links. Waere er verschiebbar, koennte ihn der
+    // Nutzer aus dem Fenster schieben und damit den einen Weg zurueck verlieren.
+    if (tabId === EXPLORER_TAB_ID) return;
+    if (beforeId === EXPLORER_TAB_ID) beforeId = tabs[0]?.id === EXPLORER_TAB_ID ? (tabs[1]?.id ?? beforeId) : beforeId;
     setTabs((prev) => {
       const from = prev.findIndex((tab) => tab.id === tabId);
       if (from < 0) return prev;
@@ -919,27 +950,49 @@ function FileExplorerWindow({
               <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
+          {/* Ein Weg zum Baum, der nicht ueber den Tabstrom laeuft. Der
+              Explorer-Tab waere zwar da, aber er ist der linke Rand einer
+              Leiste, die auf schmalen Fenstern rechts aus dem Bild rollt —
+              dieser Knopf bleibt immer an derselben Stelle. Nur sichtbar,
+              wenn gerade wirklich etwas anderes offen ist, sonst waere er ein
+              Knopf, der nichts aendert. */}
+          {!showExplorer && (
+            <button
+              type="button"
+              className={windowStyles.newTabButton}
+              onClick={() => setActiveTabId(EXPLORER_TAB_ID)}
+              title={t("files.explorerWindowBackToTree")}
+              aria-label={t("files.explorerWindowBackToTree")}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+            </button>
+          )}
         </div>
 
-        {/* Baum links, Inhalt rechts. `.workspace` macht daraus eine Zeile;
-            ohne diese Huelle waeren beide Abschnitte Geschwister im Panel
-            und stuenden untereinander, wo bei festen 90vh der Inhalt die
-            Flaeche fraess und der Baum auf null zusammengedrueckt wuerde. */}
+        {/* Der Baum ist der Inhalt seines eigenen Tabs, nicht eine feste Spalte
+            daneben. Solange der Explorer-Tab aktiv ist, fuellt er die ganze
+            Flaeche — vorher stand er links neben dem Viewer, auch wenn gerade
+            gar keine Datei offen war, und auf 415px fraess er die halbe Breite
+            fuer einen Baum, den man nur per Tabwechsel wieder sieht. */}
         <div className={windowStyles.workspace}>
-          <div className={windowStyles.explorer}>
-            <FileExplorer
-              cwd={cwd}
-              onOpenFile={handleOpenFile}
-              initialViewState={initialViewState}
-              onViewStateChange={handleViewStateChange}
-              changesCollapsed={changesCollapsed}
-              allowPopup={false}
-              // Bilder sind hier ganz normale Tabs. Ohne diesen Schalter wuerde
-              // ein Klick auf ein Bild weiterhin das grosse Overlay oeffnen und
-              // der Nutzer haette neben dem Fenster noch eines darueber.
-              imageTarget="openFile"
-            />
-          </div>
+          {showExplorer && (
+            <div className={windowStyles.explorer}>
+              <FileExplorer
+                cwd={cwd}
+                onOpenFile={handleOpenFile}
+                initialViewState={initialViewState}
+                onViewStateChange={handleViewStateChange}
+                changesCollapsed={changesCollapsed}
+                allowPopup={false}
+                // Bilder sind hier ganz normale Tabs. Ohne diesen Schalter wuerde
+                // ein Klick auf ein Bild weiterhin das grosse Overlay oeffnen und
+                // der Nutzer haette neben dem Fenster noch eines darueber.
+                imageTarget="openFile"
+              />
+            </div>
+          )}
 
           {/* Derselbe `FileViewer` wie im rechten Panel der Hauptseite. Eine
               eigene Ansicht hier wuerde von der Panel-Fassung abdriften, und
@@ -947,7 +1000,7 @@ function FileExplorerWindow({
               sie zu duplizieren. Kein `sourceSessionId`, weil der Explorer
               bereits auf `cwd` steht; ohne die Mention-Props, weil sie in den
               Chat der Hauptseite schreiben wuerden, den man hier nicht sieht. */}
-          {activeTab ? (
+          {activeTab && activeTab.kind !== "explorer" ? (
             <div className={windowStyles.content}>
               {/* Ein Tab ohne Datei traegt keinen Viewer: der wuerde einen
                   leeren Pfad laden und mit einer Fehlermeldung enden. Statt
@@ -967,9 +1020,9 @@ function FileExplorerWindow({
                 />
               )}
             </div>
-          ) : (
+          ) : !showExplorer ? (
             <div className={windowStyles.empty}>{t("files.explorerWindowNoTab")}</div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>,

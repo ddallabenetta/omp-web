@@ -5,7 +5,13 @@ import { getFileIcon } from "./FileIcons";
 import { useI18n } from "@/hooks/useI18n";
 
 export interface FileTab {
-  kind: "file";
+  /**
+   * `"explorer"` ist der Baum selbst, dauerhaft der erste Tab des Fensters.
+   * Er traegt keine Datei und wird nie geschlossen: er ist der Rueckweg aus
+   * jeder Datei heraus, und ein Tabstrom, in dem man sich selbst einschliessen
+   * kann, ist keine Navigation. `"file"` ist alles, was eine Datei zeigt.
+   */
+  kind: "explorer" | "file";
   id: string;
   label: string;
   /**
@@ -307,7 +313,7 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
               // sichtbar ist dann nur der Titel des Tabs. Die Beschriftung
               // steht als Rueckfall dahinter, weil sie auch fuer einen leeren
               // Tab das einzige ist, was ihn benennt.
-              title={tab.kind === "file" ? (tab.filePath || tab.label) : `Terminal · ${tab.label}`}
+              title={tab.kind === "file" ? (tab.filePath || tab.label) : tab.kind === "explorer" ? tab.label : `Terminal · ${tab.label}`}
             >
               {tab.label}
             </span>
@@ -315,8 +321,12 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
               onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
               onMouseEnter={() => setHoveredClose(tab.id)}
               onMouseLeave={() => setHoveredClose(null)}
+              // Der Explorer-Tab ist der Rueckweg und hat keinen. Der Knopf
+              // verschwindet nicht nur optisch — `handleCloseTab` im Fenster
+              // weist ihn ohnehin zurueck, und ein Knopf, der dann nichts
+              // tut, waere schlechter als keiner.
               style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
+                display: tab.kind === "explorer" ? "none" : "flex", alignItems: "center", justifyContent: "center",
                 width: 24, height: 24,
                 background: hoveredClose === tab.id ? "var(--bg-hover)" : "transparent",
                 border: "none",

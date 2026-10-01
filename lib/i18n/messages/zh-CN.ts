@@ -252,6 +252,7 @@ export const zhCNLocale: LocalePlugin = {
     "files.explorerWindowTitle": "资源管理器",
     "files.explorerWindowNoTab": "点击文件即可在此窗口中打开，标签页不会离开本窗口。",
     "files.explorerWindowNewTab": "新建标签页",
+    "files.explorerWindowBackToTree": "返回文件树",
     "files.explorerWindowEmptyTab": "未命名",
     "files.explorerWindowPickFile": "此标签页还没有文件。在目录树中点击一个文件，或输入路径。",
     "files.explorerWindowOpenPath": "打开路径",
