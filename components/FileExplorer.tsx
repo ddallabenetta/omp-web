@@ -2,6 +2,7 @@
 
 import { forwardRef, useState, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef } from "react";
 import { getFileIcon, FolderIcon } from "./FileIcons";
+import { createPortal } from "react-dom";
 import windowStyles from "./FileExplorerWindow.module.css";
 import {
   encodeFilePathForApi,
@@ -658,6 +659,19 @@ function FileExplorerWindow({
   t: Translate;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  /**
+   * Wohin das Fenster gerendert wird. `null`, solange es den Server nicht
+   * gibt — dort existiert `document` nicht, und ein Render dorthin waere ein
+   * harter Absturz beim Build.
+   *
+   * Das Portal ist keine Formalie: die Sidebar, in der diese Komponente
+   * haengt, setzt `overflow-x: hidden` auf ihren Explore-Behaelter, und das
+   * schneidet jedes Fenster am Rand der Sidebar ab. `position: fixed` loest das
+   * nicht, denn es bezieht sich nur dann auf das Fenster, wenn kein Vorfahr
+   * clippt. An `document.body` haengend liegt es ueber allem. Dasselbe Muster
+   * nutzen `DirectoryPicker` und `FileContextMenu`.
+   */
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const titleId = useId();
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -803,8 +817,20 @@ function FileExplorerWindow({
   }, []);
 
   useEffect(() => {
-    panelRef.current?.focus();
+    setPortalTarget(document.body);
   }, []);
+
+  useEffect(() => {
+    /**
+     * Der Fokus wandert mit dem Portal: der erste Render gibt `null` zurueck,
+     * weil es `document.body` auf dem Server nicht gibt. Ohne `portalTarget` in
+     * der Abhaengigkeit laeuft dieser Effekt genau einmal, bevor das Panel
+     * existiert, und `panelRef.current` ist `null` — der Dialog stuende dann
+     * ohne Fokus im Hintergrund und bekäme keinen Tastendruck.
+     */
+    if (!portalTarget) return;
+    panelRef.current?.focus();
+  }, [portalTarget]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -832,7 +858,9 @@ function FileExplorerWindow({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  return (
+  if (!portalTarget) return null;
+
+  return createPortal(
     <div
       className={`omp-modal-backdrop ${windowStyles.backdrop}`}
       onClick={(event) => {
@@ -944,7 +972,8 @@ function FileExplorerWindow({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    portalTarget,
   );
 }
 
