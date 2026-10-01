@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getFileIcon } from "./FileIcons";
 import { useI18n } from "@/hooks/useI18n";
 
@@ -99,6 +99,30 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
   // Record. Sie haelt die Elemente fuer die Trefferpruefung beim Ziehen.
   const tabRefs = useRef(new Map<string, HTMLDivElement>());
 
+  /**
+   * Haelt den aktiven Tab sichtbar.
+   *
+   * Die Tabs waechsen nach rechts, und nichts hat sie bisher gerollt: im
+   * Hauptpanel faellt das nicht auf, weil die Leiste dort breiter ist als die
+   * Tabs. Im Explorer-Fenster ist sie es nicht — bei 415px Viewport sind 342px
+   * Leiste gegen 360px Tabs, der neu geoeffnete Tab ragt 40px hinaus und sieht
+   * abgeschnitten aus, obwohl die Kachel intakt ist. Die Leiste scrollt bereits
+   * (`overflowX: auto` an der Wurzel, Zeile 184), es fehlte nur der Anlass.
+   *
+   * `nearest` statt `center`: es rollt nur so weit, wie noetig ist. Ein
+   * `center` wuerde beim Wechsel zwischen zwei sichtbaren Tabs die halbe
+   * Leiste mitschieben, obwohl nichts verdeckt war.
+   *
+   * Die Kachel traegt `scroll-margin`, damit sie nicht direkt am Rand klebt.
+   */
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const strip = stripRef.current;
+    const active = tabRefs.current.get(activeTabId);
+    if (!strip || !active) return;
+    active.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, tabs.length]);
+
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>, tabId: string) => {
     if (!onReorder) return;
     // Nur die linke Taste zieht. Die mittlere schliesst den Tab
@@ -177,6 +201,7 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
 
   return (
     <div
+      ref={stripRef}
       style={{
         display: "flex",
         alignItems: "flex-end",
@@ -238,6 +263,11 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorder }
               whiteSpace: "nowrap",
               maxWidth: 180,
               minWidth: 80,
+              // Haelt den Kachelrand vom Leistenrand weg, wenn der aktive
+              // Tab hineingescrollt wird. Ohne das klebt er exakt am Rand und
+              // wirkt angeschnitten, was genau der Eindruck ist, den wir hier
+              // vermeiden.
+              scrollMarginInline: 4,
               flexShrink: 0,
               userSelect: "none",
               // `touch-action: none` nur auf dem Tab, und nur wenn Verschieben
