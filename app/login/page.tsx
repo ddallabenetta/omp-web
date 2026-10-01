@@ -58,7 +58,7 @@ export default function LoginPage() {
 
   return (
     <main className={styles.page}>
-      <div className={`${styles.card} omp-pop-in`}>
+      <div className={`${styles.card} omp-pop-in ${styles.idleLoop}`}>
         <div className={styles.brand}>
           <OmpWordmark markSize={20} />
         </div>

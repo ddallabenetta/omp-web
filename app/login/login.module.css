@@ -17,6 +17,35 @@
   background: var(--bg-panel);
 }
 
+/* Atmet, solange niemand angemeldet ist.
+ *
+ * `omp-pop-in` spielt einmal beim Mount und ist danach fertig — auf einer
+ * Login-Seite ist das ein toter Zustand, denn hier wartet man. Diese Schleife
+ * haelt die Karte sichtbar, ohne die Einblendung zu ueberholen: sie aendert
+ * nur `transform`, waehrend `omp-pop-in` `opacity` und `filter` faehrt. Die
+ * beiden greifen nicht in dieselbe Eigenschaft ein, deshalb bleibt der
+ * Einblend-Verlauf unberuehrt.
+ *
+ * `transform` ist hier eine Einzelliegenschaft, kein Wertepaar, weil
+ * `transform-origin: top right` aus `omp-pop-in` erhalten bleibt — es gibt
+ * keine `translate`-Komponente, die zur Kachel-Oberkante addiert wird.
+ *
+ * Eine Schleife ist nur dann erlaubt, wenn `prefers-reduced-motion` sie
+ * abschaltet. Beim Login ist die Alternative nicht "hübsch statisch", sondern
+ * "unendlich hübsch" — das ist genau die Art Bewegung, die die Einstellung
+ * abschaffen will. */
+.idleLoop {
+  animation: login-idle-breathe 3.4s ease-in-out infinite;
+}
+@keyframes login-idle-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.012); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .idleLoop { animation: none; }
+}
+
 .brand {
   display: flex;
   align-items: center;
