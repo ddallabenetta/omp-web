@@ -57,6 +57,36 @@ identity: null}`.
 So `OMP_WEB_PASSWORD` is a single-credential door, not a multi-user
 configuration. Several accounts require the accounts file instead.
 
+### Where account homes live
+
+Creating an account makes a directory for it, and that directory is the
+boundary everything else in this document is measured against: the file
+allow-list, session ownership, and the per-account `models.yml` all derive
+from it. Its parent is `OMP_WEB_HOME_ROOT`, defaulting to `/home`.
+
+The default is wrong for a service that does not run as root. Creating an
+account calls `mkdirSync(home, { mode: 0o700 })` with no permission check and
+no fallback, so an unprivileged service account cannot create accounts at all
+and the API returns the raw system error — `EACCES: permission denied, mkdir
+'/home/pi/newuser'` — with the server's own absolute path in it. Two ways out,
+and they answer different questions:
+
+```bash
+# 1. Give the service a parent it can write. No code change.
+OMP_WEB_HOME_ROOT=/home/pi/accounts
+
+# 2. Or grant the service account write access to /home, which is a much
+#    larger grant than account creation needs.
+```
+
+Check the service account before assuming either: `systemctl show omp-web.service
+-p User`, then `sudo -u pi mkdir -p <root>/probe`. The UI shows the configured
+root, so `/home` appearing in Settings means the variable is not set.
+
+Setting this changes where homes are looked for, not where they already are.
+An existing account keeps the home its own session files name, so the two must
+be decided together rather than one after the other.
+
 ## The username
 
 The username is not a secret, but it is part of the credential and is checked
