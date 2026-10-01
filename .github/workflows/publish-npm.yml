@@ -1,70 +1,48 @@
 name: Publish npm package
 
+# Disabled for this distribution.
+#
+# This repo ships GitHub releases only. The package name `omp-web` belongs to
+# the upstream line, and the provenance of what this workflow would publish is
+# not ours to assert. The original workflow body is kept below for reference.
+#
+# To publish again: delete this file, restore the workflow from the upstream
+# history, and configure npm trusted publishing for this repository first.
+# See docs/release.md.
+
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
-    inputs:
-      ref:
-        description: Git ref containing the package version to publish
-        required: false
-        type: string
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: npm-publish-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build and publish to npm
+  disabled:
+    name: npm publishing is disabled for this distribution
     runs-on: ubuntu-latest
-    environment: npm
     steps:
-      - name: Check out tag
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.ref || github.ref }}
+      - run: echo "npm publishing is disabled for this distribution; see docs/release.md"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      - name: Update npm for trusted publishing
-        run: npm install --global npm@latest
-
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          # engines.bun requires >=1.3.14: the omp SDK ships TypeScript that
-          # imports `bun:` builtins, so an older Bun cannot serve the API routes.
-          bun-version: "1.3.14"
-
-      - name: Verify tag matches package version
-        env:
-          PUBLISH_REF: ${{ inputs.ref || github.ref_name }}
-        shell: bash
-        run: |
-          tag_version="${PUBLISH_REF#v}"
-          package_version="$(node -p "require('./package.json').version")"
-          if [[ "$tag_version" != "$package_version" ]]; then
-            echo "Tag $PUBLISH_REF does not match package.json version $package_version" >&2
-            exit 1
-          fi
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build package
-        run: bun run build
-
-      - name: Publish package
-        run: npm publish --access public --provenance
+# ---------------------------------------------------------------------------
+# Original workflow, retained as reference. Everything from here down is inert:
+# it is not referenced by the `disabled` job above.
+#
+# on:
+#   push:
+#     tags:
+#       - "v*"
+#   workflow_dispatch:
+#
+# permissions:
+#   contents: read
+#   id-token: write
+#
+# jobs:
+#   publish:
+#     runs-on: ubuntu-latest
+#     environment: npm
+#     concurrency:
+#       group: npm-publish-${{ github.ref }}
+#       cancel-in-progress: false
+#     steps:
+#       - run: npm publish --access public --provenance

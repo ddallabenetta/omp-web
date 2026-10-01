@@ -3,20 +3,54 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/omp-web"><img src="https://img.shields.io/npm/v/omp-web?style=flat&colorA=222222&colorB=CB3837" alt="npm version"></a>
-  <a href="https://github.com/ddallabenetta/omp-web/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ddallabenetta/omp-web?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
+  <a href="https://github.com/steimerbyte/omp-web/releases"><img src="https://img.shields.io/github/v/release/steimerbyte/omp-web?style=flat&colorA=222222&colorB=58A6FF" alt="Release"></a>
+  <a href="https://github.com/steimerbyte/omp-web/blob/main/LICENSE"><img src="https://img.shields.io/github/license/steimerbyte/omp-web?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
 </p>
 
 <p align="center">
-  Fork of <a href="https://github.com/agegr/pi-web">pi-web</a> by <a href="https://github.com/agegr">@agegr</a> 
+  Originally forked from <a href="https://github.com/agegr/pi-web">pi-web</a> and omp-web.
+  This is an independent distribution now — see <a href="#provenance">Provenance</a>.
 </p>
-
 
 The web view for [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi). omp-web reads the sessions the `omp` CLI already writes and gives you a browser workspace for session browsing, real-time chat, model roles, provider configuration, skill management, and project file preview.
 
 It is not a separate agent: omp-web runs omp's own SDK in-process, against the same `~/.omp/agent` directory, so a session started in the terminal continues in the browser and back again.
+
+## What this distribution adds
+
+The upstream project tracks omp closely. Everything below is work that exists only
+here — either new surface, or a defect in the inherited code that had to be found
+before it could be fixed.
+
+**Multiple accounts, not one password.** Upstream has a single credential that
+locks the whole interface. This distribution has real accounts: an admin creates
+them, each gets its own home directory, its own `models.yml` and `config.yml`,
+its own terminal sessions, and its own view of which sessions and shells exist.
+File access is a per-account root set rather than one process-wide allowlist, and
+an admin can read `/etc` but not write to it. Full threat model, including what
+this deliberately does *not* protect against: [docs/authentication.md](./docs/authentication.md).
+
+**A file explorer you can work in.** The tree became a tab in its own right: a
+permanent first tab you cannot close, files open beside it, and a button that
+hands the tree back. The window portals out of the sidebar so it is a real
+overlay instead of a panel clipped to half the screen on a phone. Write
+operations — create, rename, move, copy, delete, upload — go through a guard
+that was not there before.
+
+**A terminal next to the chat.** A PTY-backed shell in a browser tab, session-scoped,
+with input, resize, and a stream. On mobile the layout switches to a 90vh overlay
+instead of a cramped side panel.
+
+**Live machine stats.** A CPU and RAM badge in the top bar with a sparkline
+popover, reporting what the container actually has rather than what the host
+kernel advertises.
+
+**A browser you can sign in to.** Cookie sessions on top of Basic Auth, a proper
+login page, and a recovery flow — plus a documented `OMP_WEB_HOME_ROOT` variable
+that is the one thing account creation needs and which no release before this
+had documented.
 
 
 ## Quick Start
@@ -28,11 +62,31 @@ curl -fsSL https://bun.sh/install | bash        # macOS / Linux
 powershell -c "irm bun.sh/install.ps1 | iex"    # Windows
 ```
 
-**Run without installing:**
+**From a release:**
 
 ```bash
-bunx omp-web@latest
+git clone https://github.com/steimerbyte/omp-web.git
+cd omp-web
+bun install
+bun run build
+bunx omp-web
 ```
+
+Or download a release tarball from the [releases page](https://github.com/steimerbyte/omp-web/releases)
+and run the same three commands in the extracted directory.
+
+**Install globally from a checkout:**
+
+```bash
+bun add -g ./omp-web    # or: npm install -g ./omp-web
+omp-web
+```
+
+This distribution is not published to the npm registry — the publish workflow
+that came with the fork is disabled here. Install from a checkout or a release
+tarball, as above. If you have a `pi-web` or `omp-web` package from the registry
+installed, it is a different build; remove it first so the entrypoints do not
+shadow each other.
 
 On Windows, if `bunx` fails before startup with `EPERM: Operation not permitted (NtSetInformationFile())` while moving a package to the Bun cache, the failure is in Bun's Windows cache rename, not in omp-web. Update Bun and retry with a fresh cache:
 
@@ -41,20 +95,13 @@ bun upgrade
 bun pm cache rm
 $env:BUN_INSTALL_CACHE_DIR = "$env:LOCALAPPDATA\omp-web-bun-cache"
 New-Item -ItemType Directory -Force $env:BUN_INSTALL_CACHE_DIR | Out-Null
-bunx omp-web@latest
+bunx omp-web
 ```
 
 If an antivirus or endpoint-security process still holds the extracted directory open, use npm for dependency installation; the `omp-web` launcher still starts the server through Bun:
 
 ```powershell
-npm install -g omp-web@latest
-omp-web
-```
-
-**Or install globally:**
-
-```bash
-bun add -g omp-web    # or: npm install -g omp-web
+npm install
 omp-web
 ```
 
@@ -94,7 +141,7 @@ That publishes <http://127.0.0.1:30141> with the password lock on, sharing
 `$HOME/.omp` with the container so terminal sessions continue in the browser.
 Volume layout, UID/GID matching and reverse-proxy notes: [docs/docker.md](./docs/docker.md).
 
-## Password access
+## Accounts
 
 A password locks the web interface and every API endpoint behind authentication. Sign in through the browser form, or send HTTP Basic Auth — both accept the same credential. Turn the lock on wherever suits you:
 
@@ -108,10 +155,72 @@ The password is stored as a `scrypt` hash in `~/.omp/agent/omp-web-auth.json` (m
 
 Session cookies are additionally bound to the server process: the signing key is salted with a random value generated at each cold start, so a cookie stops verifying after a restart even though the credential itself did not change. Sign in again after a redeploy.
 
+### Several accounts
+
+`OMP_WEB_PASSWORD` is a single-credential door, not a multi-user configuration. With
+it set there is exactly one account — the configured username. Any other name is
+refused the same way a wrong password is, which is deliberate: it keeps the
+question "is that a second user or a typo" from becoming something the caller can
+probe.
+
+Real accounts come from an accounts file. An admin creates them under
+**Settings → Accounts**, and each one gets:
+
+- a home directory, which is the boundary for file access, session ownership, and
+  its own `models.yml` and `config.yml`;
+- its own sessions and terminals — another account's session answers `404`, not
+  `403`, so a probe learns nothing about whether the id exists;
+- a config that starts empty on purpose, because copying the operator's
+  `models.yml` would hand his API key to the first tenant.
+
+Admins are `omp`, `pi`, and `steimerbyte` by default, overridable through
+`OMP_WEB_ADMINS`. The exemption is deliberate and covers writes: a compromised
+admin password is host compromise, not just a stolen tenant.
+
+**One setting decides whether account creation works at all.** Creating an account
+makes a directory for it, and the default parent is `/home`. An unprivileged
+service account cannot write there, and because the call has no permission check
+and no fallback, account creation fails outright with a raw system error naming
+the server's own path. Set `OMP_WEB_HOME_ROOT` to somewhere the service can
+write:
+
+```bash
+mkdir -p /home/pi/accounts && chown pi:pi /home/pi/accounts
+# in the service unit:
+Environment=OMP_WEB_HOME_ROOT=/home/pi/accounts
+```
+
+The settings panel shows the configured root, so seeing `/home` there means the
+variable is not set. It changes where homes are *looked for*, not where they
+already are — decide it together with any existing account rather than one after
+the other.
+
+Stated plainly, because it is easy to read the above as more than it is: none of
+this is containment. Every boundary is an assignment decided from data the service
+process can write, so it stops an account from seeing another's work by accident
+and through the routes that exist — not against someone who edits the underlying
+files. Session ownership itself comes from a `cwd` field in a file the service
+account owns. Closing that gap needs an OS user per account, not a stricter check.
+
+Full details, including the recovery threat model: [docs/authentication.md](./docs/authentication.md).
+
 omp-web can invoke a high-privilege agent. Password access does not encrypt the credential in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
 API requests accept loopback names, IP literals, the selected bind hostname, exact comma-separated names in `OMP_WEB_ALLOWED_HOSTS`, and wildcard patterns such as `*.example.com`. Configure that variable when a trusted reverse proxy uses a different external hostname.
 
-Full details, including the recovery threat model: [docs/authentication.md](./docs/authentication.md).
+## Provenance
+
+This began as a fork of [agegr/pi-web](https://github.com/agegr/pi-web) and was
+carried forward through the omp-web line. It is now an independent distribution:
+the upstream remote has been removed, so there is no merge path and no automatic
+tracking. Pulling upstream changes in is a deliberate operation — re-add the
+remote, fetch, and reconcile by hand.
+
+The line of descent is still visible in the history and in the MIT license, which
+is unchanged. What changed is who ships it and from where.
+
+Releases are cut from this repository only. The npm publish workflow that came
+with the fork is disabled here — this distribution is installed from source or a
+release tarball, not from the registry.
 
 ## Model roles
 
@@ -146,7 +255,7 @@ On macOS or Linux:
 ```bash
 HTTP_PROXY=http://127.0.0.1:7890 \
 HTTPS_PROXY=http://127.0.0.1:7890 \
-bunx omp-web@latest
+bunx omp-web
 ```
 
 On Windows PowerShell:
@@ -154,7 +263,7 @@ On Windows PowerShell:
 ```powershell
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
 $env:HTTPS_PROXY = "http://127.0.0.1:7890"
-bunx omp-web@latest
+bunx omp-web
 ```
 
 Requests to loopback addresses are never proxied, so a local provider (Ollama, LM Studio, llama.cpp) keeps working with a proxy configured. Note that Bun does **not** currently honour `NO_PROXY` for other hosts.
@@ -162,12 +271,15 @@ Requests to loopback addresses are never proxied, so a local provider (Ollama, L
 ## Features
 
 - **Pick work back up**: browse previous omp conversations by project without digging through terminal history or session paths.
+- **Share the server safely**: real per-account access — an admin creates accounts, each gets its own home, config, sessions, and terminals, and file access is a per-account root set rather than one process-wide allowlist.
+- **Work in the files**: create, rename, move, copy, delete, and upload from the browser, each behind a write guard that is checked against the account, not just the path.
+- **Open the tree in its own window**: the explorer portal-renders out of the sidebar as a real overlay, and the tree is the window's first tab rather than a fixed column.
 - **Route by role**: assign and switch models per scope of work — the roles omp already uses for subagents, plan mode, and commits.
 - **Try different directions safely**: continue from an earlier message or fork a session into a separate route.
 - **Work across branches**: switch Git worktrees from the sidebar so new sessions and the Explorer follow the checkout you choose.
 - **Chat beside the project**: browse files on the left and preview source, docs, images, audio, and PDFs on the right while the agent works.
 - **Edit files in the browser**: open a file, change it, and save with `Ctrl+S` — no round trip to the terminal.
-- **Run a terminal next to the chat**: a real shell in a browser tab, session-scoped, so a failing command and its output sit next to the agent that produced them.
+- **Run a terminal next to the chat**: a real shell in a browser tab, session-scoped, with input and resize, so a failing command and its output sit next to the agent that produced them.
 - **Watch the machine work**: a live CPU and RAM badge in the top bar, with a sparkline popover on click.
 - **See session state clearly**: context usage, cost, compaction state, and system prompt details are visible from the top bar.
 - **Configure less from the terminal**: manage providers, logins/API keys, model tests, plugins, and skill switches from the web UI.
@@ -229,7 +341,7 @@ window.addEventListener("pi-web:session-row-contextmenu", (event) => {
 
 The detail object contains `id`, `path`, `cwd`, optional `name`, pointer
 coordinates, and a `refresh()` callback for actions that change the session
-list. If no listener cancels the extension event, Pi Web preserves the
+list. If no listener cancels the extension event, omp-web preserves the
 browser's native context menu. This hook is browser-side and independent of
 Pi agent extensions.
 
@@ -288,7 +400,7 @@ Pushing a `v*` tag triggers `.github/workflows/publish-desktop.yml`: it builds
 macOS (universal) and Windows bundles, uploads them to a GitHub release with
 Ed25519 signatures, and generates the updater manifest (`latest.json`). The
 updater fetches
-`https://github.com/ddallabenetta/omp-web/releases/latest/download/latest.json`.
+`https://github.com/steimerbyte/omp-web/releases/latest/download/latest.json`.
 To enable that, configure two repository secrets — `TAURI_SIGNING_PRIVATE_KEY`
 (contents of `~/.omp/omp-web/omp-desktop-signing.key`, generated by
 `bun run desktop:signer generate`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
@@ -306,7 +418,9 @@ app/
     cwd/validate/   # custom working directory validation
     default-cwd/    # omp default working directory lookup
     files/          # file listing, reading, preview, and watching
+    file-actions/   # create, rename, move, copy, delete, upload
     home/           # current user home directory
+    whoami/         # the caller's identity, as the proxy resolved it
     model-roles/    # read/write omp's modelRoles (default/smol/slow/plan/…)
     models/         # available models, default model, thinking levels, roles
     models-config/  # read/write models.yml and test models
@@ -319,6 +433,7 @@ app/
     web-access/     # credential check, sign-in, and the recovery code
       login/        # POST sign-in, sets the session cookie
       recovery/     # trade a recovery code for a new password
+      users/        # account management, admin only
     worktrees/      # Git worktree listing and switching
   login/            # sign-in page
   recover/          # forgotten-password page
@@ -332,14 +447,23 @@ components/
   ModelsConfig.tsx    # provider and auth configuration panel
   ModelRolesPanel.tsx # per-role model assignment
   SkillsConfig.tsx    # skill management panel
-  FileExplorer.tsx    # file tree, with breadcrumb navigation
+  FileExplorer.tsx    # file tree, with breadcrumb navigation, and the large window
   FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview, and editing
+  FileImagePreview.tsx # image overlay with zoom and grid/list modes
+  FileBrowserDialog.tsx # file picker for copy/move/upload targets
+  FileContextMenu.tsx  # per-row actions, portalled to the body
+  UsersConfig.tsx     # account management, admin only
   SystemStatsBadge.tsx # live CPU/RAM readout with a sparkline popover
   TerminalDropdown.tsx  # terminal tab selector in the top bar
   TerminalViewer.tsx    # xterm.js surface fed by the PTY stream
 lib/
   directory-browser.ts # directory normalization and safe listing helpers
-  file-access.ts      # file read safety boundary
+  file-access.ts      # file read safety boundary, scoped per account
+  write-access.ts     # write boundary; refuses the filesystem root for admins too
+  allowed-roots.ts    # allowed roots, bucketed per identity
+  path-security.ts    # per-account home checks
+  tenant-config.ts    # resolves each account's agent directory
+  skill-lock.ts       # per-account skill install locks
   file-paths.ts       # path encoding and relative path helpers
   http-dispatcher.ts  # HTTP(S) proxy setup for server-side fetch
   markdown.ts         # Markdown/Mermaid/KaTeX plugin configuration
@@ -363,5 +487,6 @@ hooks/
 bin/
   omp-web.js          # CLI entrypoint; re-executes the server under Bun
   runtime.js          # Node/Bun version checks and Bun discovery
+  web-auth-store.js   # credential and account store, scrypt-hashed
 instrumentation.ts    # initializes the server HTTP dispatcher
 ```

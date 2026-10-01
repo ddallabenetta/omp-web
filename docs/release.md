@@ -1,217 +1,70 @@
 # Release Checklist
 
-This repo publishes two artifacts for each release:
+This repo publishes one artifact: a **GitHub Release** in
+`steimerbyte/omp-web`.
 
-- npm package: `omp-web`
-- GitHub Release: `ddallabenetta/omp-web`
+There is no npm package. The `publish-npm.yml` workflow inherited from the
+fork is disabled, and `OMP_WEB_*` releases are installed from a checkout or a
+release tarball. Do not re-enable it without deciding to publish to the
+registry again — the package name `omp-web` belongs to the upstream line.
 
-Use this checklist from a clean `main` checkout.
+There is also no upstream remote. Pulling upstream changes in is a deliberate
+operation: re-add the remote, fetch, and reconcile by hand. See the Provenance
+section in the README.
 
-## Automated npm publishing
+## Before tagging
 
-Pushing a version tag matching `v*` starts
-`.github/workflows/publish-npm.yml`. The workflow:
-
-1. Checks that the tag version matches `package.json`.
-2. Installs dependencies with Bun and runs the production build.
-3. Publishes `omp-web` to npm with provenance.
-
-Before the first release, configure npm trusted publishing for
-`ddallabenetta/omp-web`:
-
-- workflow file: `.github/workflows/publish-npm.yml`
-- GitHub environment: `npm`
-- publisher: GitHub Actions
-
-The npm package must be configured to trust this repository and workflow, and
-the repository's `npm` environment must permit the release job to run. No npm
-token is stored in GitHub Actions.
-
-
-## Automated omp dependency releases
-
-`.github/workflows/update-omp.yml` checks the latest stable `oh-my-pi` release
-and opens a dependency PR when the runtime packages change. The PR also bumps
-the `omp-web` version: a patch for a refresh within the same `oh-my-pi` major,
-a minor when the major changes (omp-web serves omp's own SDK in-process, so a
-new major moves that surface under its users too). After that PR is merged, the
-workflow creates the matching `v<version>` GitHub tag and release, with the
-updated `oh-my-pi` version in the release notes, then dispatches the npm publish
-workflow for that tag.
-
-The workflow verifies the bump with `bun run typecheck` and `bun test` before
-opening the PR, but a failure there does not fail the run: a breaking upstream
-release is exactly when the update most needs to be seen, so the PR is opened as
-a **draft** carrying the failure instead. Take the draft, make omp-web compatible
-on that branch, then mark it ready. A release tagged upstream but not yet on npm
-is likewise not a failure — the hourly schedule retries it.
-
-## 1. Preflight
+From a clean checkout of the branch you are releasing:
 
 ```bash
-git status --short --branch
-git log --oneline --decorate -5
-gh auth status
-npm whoami
-bun --version   # the published .next is built with Bun; engines.bun requires 1.3.14+
-node -e "const p=require('./package.json'); console.log(p.version)"
+git status --porcelain            # must be empty
+bun run typecheck
+bunx eslint components/ app/ lib/
+bun test
+bun run build
 ```
 
-Expected:
+`package.json` and the tag must agree. The release workflow does not check
+this, and a mismatch ships a release whose tarball reports the wrong version.
 
-- `git status` is clean, or only contains changes you intentionally plan to release.
-- GitHub is authenticated as an account that can push and create releases.
-- npm is authenticated as an account that can publish `omp-web`.
+Update `CHANGELOG.md` with what changed, grouped by kind. Say plainly what was
+*not* verified — a release note that claims more than was tested is worse than
+one that admits the gap.
 
-## 2. Publish to npm
+## Tagging
 
 ```bash
-npm run release
+git tag -a v0.9.0 -m "v0.9.0"
+git push fork v0.9.0
 ```
 
-The release script runs:
+Pushing a `v*` tag starts two workflows:
+
+- `publish-desktop.yml` builds macOS (universal) and Windows bundles and uploads
+  them to the release. It needs `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` configured; without them the job fails
+  and no desktop artifact is produced. The web release is unaffected.
+- `update-omp.yml` checks the pinned omp version upstream.
+
+## Writing release notes
+
+`gh release create v0.9.0 --title "v0.9.0" --notes-file CHANGELOG.md`
+
+The notes go on the release page. Keep them honest about what a user has to
+configure — an admin deploying this for the first time needs to know that
+account creation needs `OMP_WEB_HOME_ROOT` set, and that finding out through a
+raw `EACCES` naming the server's own path is a bad first impression.
+
+## Verifying a release
+
+After tagging, check that the thing actually works, not that the workflow went
+green:
 
 ```bash
-npm version patch --no-git-tag-version && npm run build && npm publish --access public
+gh release view v0.9.0                    # assets present
+git ls-remote --tags fork v0.9.0          # tag points where you expect
 ```
 
-Notes:
-
-- This bumps `package.json` and `package-lock.json`.
-- It intentionally runs a production build. Do not run `next build` during normal development; release work is the exception.
-- If `npm view omp-web version` briefly shows the previous version, check the exact version instead:
-
-```bash
-npm view omp-web@<version> version --registry https://registry.npmjs.org/
-npm view omp-web versions --json --registry https://registry.npmjs.org/
-```
-
-## 3. Commit the Version Bump
-
-Replace `<version>` with the new package version, for example `0.7.5`.
-
-```bash
-git diff -- package.json package-lock.json
-git add package.json package-lock.json
-git commit -m "Release v<version>"
-```
-
-## 4. Tag and Push
-
-```bash
-git tag -a v<version> -m "v<version>"
-git push origin main --tags
-```
-
-Confirm the tag does not already exist before creating it when unsure:
-
-```bash
-git ls-remote --tags origin v<version>
-gh release view v<version> --repo ddallabenetta/omp-web
-```
-
-## 5. Generate Release Notes from Commits
-
-Use the previous release tag as the base.
-
-```bash
-git log --oneline --decorate v<previous>..v<version>
-git log --format='%h%x09%s%n%b' v<previous>..v<version>
-git diff --stat v<previous>..v<version>
-```
-
-Write the release notes from those commits, not from memory. Include both Chinese and English sections. Keep commit hashes next to each item when useful.
-
-Suggested structure:
-
-```markdown
-## 中文
-
-基于 `v<previous>..v<version>` 的提交整理。
-
-### 新增
-
-- ...
-
-### 修复
-
-- ...
-
-### 改进
-
-- ...
-
-### 内部调整
-
-- 发布 npm 包 `omp-web@<version>`。
-
-## English
-
-Prepared from commits in `v<previous>..v<version>`.
-
-### Added
-
-- ...
-
-### Fixed
-
-- ...
-
-### Improved
-
-- ...
-
-### Internal
-
-- Published npm package `omp-web@<version>`.
-```
-
-## 6. Create or Update the GitHub Release
-
-Create a new release:
-
-```bash
-gh release create v<version> \
-  --repo ddallabenetta/omp-web \
-  --verify-tag \
-  --title "v<version>" \
-  --notes-file release-notes.md
-```
-
-If the release already exists and only the notes need updating:
-
-```bash
-gh release edit v<version> \
-  --repo ddallabenetta/omp-web \
-  --notes-file release-notes.md
-```
-
-You can avoid a temporary file by passing notes through stdin:
-
-```bash
-gh release edit v<version> --repo ddallabenetta/omp-web --notes-file - <<'EOF'
-## 中文
-
-...
-
-## English
-
-...
-EOF
-```
-
-## 7. Final Verification
-
-```bash
-gh release view v<version> --repo ddallabenetta/omp-web
-npm view omp-web@<version> version --registry https://registry.npmjs.org/
-git status --short --branch
-git log --oneline --decorate -3
-```
-
-Expected:
-
-- GitHub Release exists and is not a draft unless intentionally published as one.
-- npm exact version resolves.
-- `main` is aligned with `origin/main`.
-- `HEAD` points at the release commit and `v<version>` tag.
+Then install it the way a user would — clone, `bun install`, `bun run build`,
+start it — and exercise the multi-account path with two real accounts. A
+release that has not been signed into is not a verified release.
