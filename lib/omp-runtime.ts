@@ -5,6 +5,7 @@ import {
   Settings,
 } from "@oh-my-pi/pi-coding-agent";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent";
+import { ModelsConfigFile } from "@oh-my-pi/pi-coding-agent/config/models-config";
 
 /**
  * Process-wide omp services.
@@ -61,7 +62,18 @@ export async function getSettingsForCwd(cwd: string | undefined): Promise<Settin
   return settings.cloneForCwd(cwd);
 }
 
-/** Drop the cached runtime so the next request rebuilds it (config/auth edits). */
+/**
+ * Drop the cached runtime so the next request rebuilds it (config/auth edits).
+ *
+ * `ModelsConfigFile` has to be dropped too. It is a module-level singleton with
+ * its own parse cache, and a *new* `ModelRegistry` reads that cache in its
+ * constructor — then records the file's current mtime as "the mtime I loaded".
+ * Without this, the first request after a `models.yml` edit builds a registry
+ * from the stale parse and pins the new mtime, so every later `refresh()`
+ * short-circuits on the mtime gate and the edit stays invisible until the
+ * process restarts.
+ */
 export function invalidateOmpRuntime(): void {
   globalThis.__ompRuntimePromise = undefined;
+  ModelsConfigFile.invalidate();
 }
