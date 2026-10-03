@@ -180,13 +180,36 @@ IP literals, the bind hostname, and the names listed in
 `*.example.com`); cross-site browser requests are rejected outright. Those
 checks run before authentication and apply to `/recover` too.
 
-And once several accounts exist, a per-account boundary around the terminal
-protects the route, not the shell: the process runs as one user and the spawned
-shell gets no `uid`/`gid` switch, so anyone holding an open terminal can read
-anything that account can read. Per-account terminals are bookkeeping, not
-containment.
+And once several accounts exist, the terminal is the one boundary that is
+enforced by the kernel rather than by a check in this code. The shell for an
+account runs inside a [`bubblewrap`](https://github.com/containers/bubblewrap)
+user namespace: it binds exactly one directory — that account's own home, at
+`/home/<name>` — and nothing else. Another account's home is not mounted and
+therefore does not exist inside; `cat /home/<someone-else>/secret` answers `No
+such file or directory`, not `Permission denied`, because there is nothing
+behind that path to open. `/etc/shadow` stays `Permission denied`, and the
+`uid=0` inside the namespace is not the host's root: `sudo` reports that no new
+privileges flag is set, and `su` fails on the token.
 
-The same shape applies to the other per-account boundaries. File access,
+This is deliberately not an OS user per account. Measured on the host this was
+built for, that route is unavailable: `sudo -n true` demands a password,
+`setpriv --reuid=…` answers `setresuid failed: Operation not permitted`, and
+`/home` is `root:root 0755`. The namespace needs neither root nor sudo, and it
+does not cost the service its access to the files a tenant writes — an
+unprivileged user namespace maps the fake uid back onto the service account, so
+the service can still read and clean up after a tenant. A real `useradd` per
+account would break exactly there.
+
+The fallback is honest and visible. Without `bwrap`, or where the kernel
+refuses unprivileged user namespaces, the shell opens unconfined and the API
+says so: `sandboxed` is `false` in the `GET /api/terminal` response, and the
+service logs a warning naming the reason. The key is always present, so a
+client never has to distinguish "not isolated" from "field missing". A working
+directory outside the account's home is refused outright rather than opened
+somewhere else — the response carries `cwd-outside-home` and a remediation
+instead of a shell that is quietly in the wrong place.
+
+The other per-account boundaries keep the older, weaker shape. File access,
 workspace validation, and session ownership are all **assignments, not
 containment**: each is decided from data the service process itself can write — a
 requested path, a `cwd` field inside a session file, a terminal id. The session
@@ -195,11 +218,12 @@ runs as, and that account can write them. So whoever can write that data decides
 what it points at: editing the `cwd` of someone else's session file moves that
 session into your own home as far as the service is concerned.
 
-These checks stop accounts from seeing each other by accident and through the
-routes the service exposes. They do not survive someone who edits the underlying
-files, and closing that would mean giving each account its own OS user, not
-sharpening a check. Read the per-account features as separation between honest
-users of one service, not as isolation between people sharing a host.
+Those checks stop accounts from seeing each other by accident and through the
+routes the service exposes. They do not survive someone who edits the
+underlying files, and closing that would mean giving each account its own OS
+user, not sharpening a check. Read the per-account features as separation
+between honest users of one service, with the terminal namespace as the
+exception that the kernel backs up.
 
 ## Sessions and what ends them
 

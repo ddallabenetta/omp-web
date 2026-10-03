@@ -202,6 +202,13 @@ and through the routes that exist — not against someone who edits the underlyi
 files. Session ownership itself comes from a `cwd` field in a file the service
 account owns. Closing that gap needs an OS user per account, not a stricter check.
 
+The terminal is the one exception. Its shell runs in a `bubblewrap` user
+namespace with exactly one bind — the account's own home — so another account's
+home does not exist inside rather than merely being unreadable, and `uid=0`
+there is not the host's root. It does not need an OS user, so the gap above does
+not have to stay open. Where `bwrap` or user namespaces are unavailable the shell
+opens unconfined and says so: `sandboxed` is `false` in `GET /api/terminal`.
+
 Full details, including the recovery threat model: [docs/authentication.md](./docs/authentication.md).
 
 omp-web can invoke a high-privilege agent. Password access does not encrypt the credential in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
@@ -476,7 +483,8 @@ lib/
   request-security.ts # host allowlist and cross-site request rejection
   rpc-manager.ts      # AgentSessionWrapper lifecycle and global registry
   session-reader.ts   # parses .jsonl session files and branch contexts
-  terminal-manager.ts # PTY lifetime, sessions kept alive on globalThis
+  terminal-manager.ts # PTY lifetime + sandbox spawn, sessions kept alive on globalThis
+  sandbox.ts          # the bwrap user namespace a tenant shell runs in
   web-auth.ts         # credential store, username resolution, scrypt hashing
   web-auth-session.ts # session cookie issue/verify, signed with a boot salt
 hooks/

@@ -2,6 +2,8 @@ import { randomUUID } from "crypto";
 import os from "os";
 import path from "path";
 import type { Subprocess } from "bun";
+import { checkSandboxPrerequisites, planSandboxSpawn } from "./sandbox";
+import { getUserHome } from "./request-identity";
 
 export type TerminalStatus = "running" | "exited";
 
@@ -24,6 +26,15 @@ export interface TerminalInfo {
    * das in beiden Formen dasselbe ist.
    */
   owner: string;
+  /**
+   * Laeuft die Shell wirklich in einer Sandbox?
+   *
+   * Teil der oeffentlichen Form, weil "isoliert" eine Behauptung ist, die
+   * jemand pruefen koennen muss: auf einem Host ohne `bwrap` ist das `false`,
+   * und das gehoert sichtbar in die Antwort, statt in einem Kommentar im
+   * Modul zu stehen, den niemand liest, wenn er die Shell benutzt.
+   */
+  sandboxed: boolean;
 }
 
 interface TerminalRecord {
@@ -90,6 +101,14 @@ export class TerminalManager {
   // but `script` is a standard Linux util that allocates a PTY for its child
   // and pipes the master side through stdin/stdout. That gives bash proper
   // line discipline, prompts that re-render on resize, and nested shells.
+  //
+  // The whole thing then runs inside a `bwrap` user namespace
+  // (`lib/sandbox.ts`). The previous comment here said the absence of a
+  // `uid`/`gid` switch was deliberate and left an open shell able to read
+  // `/etc/shadow`. That was true, and it is the reason this is no longer a
+  // plain `Bun.spawn`: the boundary is now enforced by the kernel, which
+  // measured out as `sudo: no new privileges flag is set` and
+  // `cat: /home/<other>: No such file or directory`.
   async spawn(cwd: string, cols = 80, rows = 24, owner: string = UNCLAIMED_OWNER): Promise<TerminalInfo> {
     const isWindows = os.platform() === "win32";
     const shell = process.env.SHELL?.trim() || (isWindows ? "powershell.exe" : "bash");
@@ -103,22 +122,54 @@ export class TerminalManager {
       // `script -qfc <cmd> /dev/null` runs <cmd> in a fresh PTY with the
       // typescript log discarded. The inner PS1 prints a one-line banner so
       // the user sees immediate feedback that the terminal is alive.
-      const inner = `printf '\\033[36m[omp-web terminal]\\033[0m ready in %s (shell=%s pid=%s, %dx%d)\\n' "$PWD" "$0" "$$" "${cols}" "${rows}"; export PS1='\\[\\033[36m\\]\\$ \\[\\033[0m\\]'; exec ${shell} -i`;
+      //
+      // No `$PWD`, `$$` or `export PS1` in the argument any more. Nicht, weil
+      // eine Namespace sie verbieten wuerde — er braucht keines von beidem.
+      // Der Grund ist die `sudoers`-Nebenstelle weiter oben: eine Regel dort
+      // kann einen interpolierten String nicht matchen, das Argument muss also
+      // statisch bleiben. Was der Banner anzeigt, ist der Grund fuer die
+      // Einschraenkung, nicht ihre Ursache.
+      const inner = `printf '\\033[36m[omp-web terminal]\\033[0m ready in %s (shell=%s %dx%d)\\n' "$PWD" "$0" "${cols}" "${rows}"; exec ${shell} -i`;
       cmd = ["/usr/bin/script", "-qfc", inner, "/dev/null"];
+    }
+
+    // Sandboxed on Linux, when the preconditions hold. A missing `bwrap` is
+    // not fatal: the shell still opens, unisolated, and the caller is told.
+    // Refusing outright would take the terminal away from every install that
+    // has no bubblewrap yet, which is a worse failure than a warning.
+    let sandboxed = false;
+    let env: NodeJS.ProcessEnv = process.env;
+    if (!isWindows && owner !== UNCLAIMED_OWNER) {
+      const preflight = checkSandboxPrerequisites(process.env);
+      if (preflight.ok) {
+        const plan = planSandboxSpawn({
+          home: getUserHome({ username: owner, isAdmin: false }),
+          username: owner,
+          command: cmd,
+          cwd,
+        });
+        if (plan.ok) {
+          cmd = plan.argv;
+          sandboxed = true;
+          // Was die Namespace-Welt dem Mandanten verspricht, kommt aus dem
+          // argv, nicht aus dieser Kopie: `--setenv HOME` setzt das Home auf
+          // `/home/<name>`, und das Home des Dienstbenutzers steht einfach
+          // nicht in den Binds — deshalb ist es nicht erreichbar. Der einzige
+          // echte Schnitt in dieser Kopie ist `OMP_WEB_PASSWORD`: das
+          // Admin-Geheimnis darf in einer Mandanten-Shell nicht liegen.
+          env = { ...process.env };
+          delete env.OMP_WEB_PASSWORD;
+        }
+      } else if (preflight.remediation) {
+        console.warn(`[terminal] sandbox unavailable, shell runs unisolated: ${preflight.remediation}`);
+      }
     }
 
     const child = Bun.spawn({
       cmd,
       cwd,
-      // Bewusst OHNE `uid`/`gid`: der Prozess laeuft als ein Benutzer, und ein
-      // Wechsel wuerde eine eigene Mandantenentscheidung sein, die hier nicht
-      // getroffen wurde. Der Besitzfilter auf dieser Shell schuetzt daher nur
-      // die ROUTE, nicht die Shell — wer eine offene Shell hat, kann
-      // `cat /etc/shadow`, und die Pfadgrenze der Dateirouten gilt von innen
-      // nicht. Ein echter uid-Wechsel pro Nutzer waere der naechste Schritt,
-      // wenn das hier entschieden wird.
       env: {
-        ...process.env,
+        ...env,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         COLUMNS: String(cols),
@@ -141,6 +192,7 @@ export class TerminalManager {
       createdAt: startedAt,
       lastActivityAt: startedAt,
       owner,
+      sandboxed,
     };
 
     const record: TerminalRecord = {

@@ -14,9 +14,11 @@ import { getUserHome, isAdminIdentity, type WebIdentity } from "./request-identi
  *
  * ### Warum der Admin beim globalen Verzeichnis bleibt
  *
- * Der Prozess laeuft ohne uid-Wechsel als ein Benutzer (siehe
- * `lib/write-access.ts`). `pi`, `omp` und `steimerbyte` sind genau die Konten,
- * die es vor dem Mandantenumbau bereits gab. Ihre Dateien — `models.yml`,
+ * Der Prozess laeuft ohne uid-Wechsel als ein Benutzer. `pi`, `omp` und
+ * `steimerbyte` sind genau die Konten, die es vor dem Mandantenumbau bereits
+ * gab. (Die Terminal-Shell traegt eine zweite, engere Grenze — die
+ * User-Namespace aus `lib/sandbox.ts` —, aber sie aendert nichts daran, wessen
+ * Agent-Verzeichnis gilt.) Ihre Dateien — `models.yml`,
  * `config.yml`, `agent.db` — liegen im globalen Agent-Verzeichnis des
  * Prozesses. Ein Admin, der auf ein eigenes Verzeichnis umgestellt wuerde,
  * saehe seinen Provider-Key verschwinden, ohne dass irgendwo ein Fehler

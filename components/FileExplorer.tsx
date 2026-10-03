@@ -167,10 +167,25 @@ interface UploadSummary {
   uploaded: string[];
   skipped: string[];
   errors: UploadError[];
+  /**
+   * Der Ordner, in den tatsaechlich geschrieben wurde. Die Namen im Chat
+   * muessen weiterhin relativ zur Projektwurzel sein, weil das Modell sie
+   * gegen das Arbeitsverzeichnis aufloest — dafuer braucht es diesen
+   * Schnappschuss, nicht das spaeter gelesene `currentPath`.
+   */
+  directory: string;
 }
 
 interface PendingConflict {
   files: File[];
+  /**
+   * Der Ordner, in den geschrieben werden soll — beim Start des Uploads
+   * mitgenommen und nicht neu aus dem Navigationszustand gelesen. Der
+   * Konflikt-Dialog kann offen bleiben, waehrend der Nutzer im Baum weiterklickt;
+   * ohne diesen Schnappschuss wuerde "Ersetzen" in einen inzwischen anderen
+   * Ordner schreiben als den, dessen Bestand der Dialog gerade zeigt.
+   */
+  directory: string;
   conflicts: string[];
   nonReplaceable: string[];
 }
@@ -2227,19 +2242,28 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     })();
   }, [handleActionNotice, selection, t, toolbarTransfer]);
 
-  const applyUploadResult = useCallback((data: UploadResponse) => {
+  // Der Zielordner wird einmal beim Start des Uploads als Wert uebernommen und
+  // durch den ganzen Ablauf durchgereicht, statt in jedem Schritt neu aus dem
+  // State gelesen zu werden. Grund: `prepareUpload` fragt erst die Konflikte
+  // ab und schreibt dann, und dazwischen kann der Nutzer im Baum klicken. Ein
+  // spaeter gelesenes `currentPath` wuerde die Datei in einen anderen Ordner
+  // schreiben als den, den der Konflikt-Check gerade freigegeben hat — der
+  // Benutzer bestaetigt "ersetzen" und bekommt trotzdem eine Datei an anderer
+  // Stelle. Der Snapshot macht Check und Schreibvorgang nachweislich gleich.
+  const applyUploadResult = useCallback((directory: string, data: UploadResponse) => {
     const uploaded = data.uploaded ?? [];
     const skipped = data.skipped ?? [];
     const errors = data.errors ?? [];
-    setUploadSummary({ uploaded, skipped, errors });
+    setUploadSummary({ uploaded, skipped, errors, directory });
 
     if (uploaded.length > 0) {
-      setHighlightedPaths(new Set(uploaded.map((name) => joinFilePath(cwd, name))));
+      setHighlightedPaths(new Set(uploaded.map((name) => joinFilePath(directory, name))));
       setTreeRefreshKey((key) => key + 1);
     }
-  }, [cwd]);
+  }, []);
 
   const performUpload = useCallback(async (
+    directory: string,
     files: File[],
     strategy: UploadConflictStrategy,
   ) => {
@@ -2249,10 +2273,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadPhase("uploading");
 
     try {
-      const { status, data } = await uploadFiles(cwd, files, strategy, setUploadProgress);
+      const { status, data } = await uploadFiles(directory, files, strategy, setUploadProgress);
       if (status === 409 && data.conflicts?.length) {
         setPendingConflict({
           files,
+          directory,
           conflicts: data.conflicts,
           nonReplaceable: data.nonReplaceable ?? [],
         });
@@ -2262,15 +2287,15 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         throw new Error(data.error ?? `Upload failed (HTTP ${status})`);
       }
       setUploadProgress(100);
-      applyUploadResult(data);
+      applyUploadResult(directory, data);
     } catch (uploadFailure) {
       setUploadError(uploadFailure instanceof Error ? uploadFailure.message : String(uploadFailure));
     } finally {
       setUploadPhase("idle");
     }
-  }, [applyUploadResult, cwd]);
+  }, [applyUploadResult]);
 
-  const prepareUpload = useCallback(async (files: File[]) => {
+  const prepareUpload = useCallback(async (directory: string, files: File[]) => {
     if (files.length === 0 || uploadBusy) return;
     setUploadSummary(null);
     setHighlightedPaths(new Set());
@@ -2281,7 +2306,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
     try {
       const res = await fetch(
-        `/api/files/${encodeFilePathForApi(cwd)}?type=upload-check`,
+        `/api/files/${encodeFilePathForApi(directory)}?type=upload-check`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2294,25 +2319,28 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       if (data.conflicts?.length) {
         setPendingConflict({
           files,
+          directory,
           conflicts: data.conflicts,
           nonReplaceable: data.nonReplaceable ?? [],
         });
         return;
       }
 
-      await performUpload(files, "error");
+      await performUpload(directory, files, "error");
     } catch (uploadFailure) {
       setUploadError(uploadFailure instanceof Error ? uploadFailure.message : String(uploadFailure));
     } finally {
       setUploadPhase("idle");
     }
-  }, [cwd, performUpload, uploadBusy]);
+  }, [performUpload, uploadBusy]);
 
   const handleUploadInput = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    void prepareUpload(files);
-  }, [prepareUpload]);
+    // `currentPath` ist der Ordner, den der Breadcrumb zeigt — dort landet der
+    // Upload, nicht in der Projektwurzel, die `cwd` nur als Startpunkt setzt.
+    void prepareUpload(currentPath, files);
+  }, [currentPath, prepareUpload]);
 
   useImperativeHandle(ref, () => ({
     openUploadPicker() {
@@ -2420,7 +2448,13 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const addUploadedFilesToChat = useCallback(() => {
     if (!uploadSummary || uploadSummary.uploaded.length === 0) return;
     onAtMentions?.(
-      uploadSummary.uploaded.map((name) => getRelativeFilePath(joinFilePath(cwd, name), cwd)),
+      // Relativ zur Projektwurzel, nicht zum Zielordner: das Modell loest
+      // einen @-Namen gegen sein Arbeitsverzeichnis auf. `directory` ist der
+      // Ordner, in den wirklich geschrieben wurde, `cwd` die Wurzel, gegen
+      // die relativiert wird — ein Unterordner wird so zu `unterordner/datei`.
+      uploadSummary.uploaded.map((name) =>
+        getRelativeFilePath(joinFilePath(uploadSummary.directory, name), cwd),
+      ),
     );
   }, [cwd, onAtMentions, uploadSummary]);
 
@@ -2471,10 +2505,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               </div>
             )}
             <div style={{ display: "flex", gap: 5, marginTop: 7 }}>
-              <button type="button" onClick={() => void performUpload(pendingConflict.files, "overwrite")} style={{ height: 22, padding: "0 7px", border: "1px solid #ef4444", borderRadius: 4, background: "transparent", color: "#ef4444", cursor: "pointer", fontSize: 10 }}>
+              <button type="button" onClick={() => void performUpload(pendingConflict.directory, pendingConflict.files, "overwrite")} style={{ height: 22, padding: "0 7px", border: "1px solid #ef4444", borderRadius: 4, background: "transparent", color: "#ef4444", cursor: "pointer", fontSize: 10 }}>
                 {t("files.replace")}
               </button>
-              <button type="button" onClick={() => void performUpload(pendingConflict.files, "skip")} style={{ height: 22, padding: "0 7px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 10 }}>
+              <button type="button" onClick={() => void performUpload(pendingConflict.directory, pendingConflict.files, "skip")} style={{ height: 22, padding: "0 7px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 10 }}>
                 {t("files.skipExisting")}
               </button>
               <button type="button" onClick={() => setPendingConflict(null)} style={{ height: 22, padding: "0 7px", border: "none", borderRadius: 4, background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 10 }}>

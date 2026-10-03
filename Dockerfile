@@ -25,8 +25,13 @@ FROM oven/bun:${BUN_VERSION}-debian AS runtime
 # git is a runtime dependency, not a build-time one: the worktree switcher, the
 # diff view and skill updates all shell out to it (lib/worktree.ts,
 # lib/git-changes.ts, lib/skill-updates.ts).
+#
+# bubblewrap is one too, for the same reason: without it every terminal in the
+# container takes the `bwrap-missing` branch of lib/sandbox.ts and runs
+# unisolated with nothing but a `console.warn`. Measured on the base image:
+# `command -v bwrap` prints nothing.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git \
+ && apt-get install -y --no-install-recommends bubblewrap ca-certificates git \
  && rm -rf /var/lib/apt/lists/*
 
 # Bind mounts keep their host ownership, so the container user has to match the

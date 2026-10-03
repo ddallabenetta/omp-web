@@ -18,6 +18,9 @@ function toInfo(info: TerminalInfo) {
     createdAt: info.createdAt,
     lastActivityAt: info.lastActivityAt,
     owner: info.owner,
+    // Siehe die gleichnamige Stelle in `app/api/terminal/route.ts`: die
+    // Serialisierung ist eine Kopie, und beide muessen dasselbe sagen.
+    sandboxed: info.sandboxed,
   };
 }
 

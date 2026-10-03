@@ -179,6 +179,9 @@ export declare function setWebAccountPassword(
 ): WebAccount;
 export declare function validateAccountName(username: unknown): string | null;
 
+export declare function checkHomeRootWritable(env?: NodeJS.ProcessEnv):
+  | { ok: true; root: string }
+  | { ok: false; root: string; detail: string; remediation: string };
 export declare function clearVerificationCache(): void;
 export declare function clearWebPassword(options?: WebAuthStoreOptions): WebAuthStatus;
 export declare function consumeRecoveryCode(

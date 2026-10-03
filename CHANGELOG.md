@@ -3,6 +3,62 @@
 All notable changes to this distribution. Versions are independent of the
 upstream line — see the Provenance section in the README.
 
+## Unreleased
+
+**Not verified in this release.** Stated plainly, because a release note that
+claims more than was tested is worse than one that admits the gap:
+
+- The sandbox was exercised on one host, on Linux, with `bubblewrap` present
+  and unprivileged user namespaces enabled. The `userns-disabled` and
+  Windows branches are covered by type and by the refusal contract, not by a
+  run.
+- The Docker image was built and `command -v bwrap` was confirmed inside it.
+  The container was not started against a real multi-account setup.
+- A working directory outside the account's home is now refused. If a
+  deployment relied on opening a terminal in such a directory — an
+  `~/omp-cwd-*` grant, for instance — that terminal will now be refused with a
+  remediation instead of opening. Bind it deliberately rather than expecting it
+  to keep working.
+
+### Terminal
+
+**Tenant shells run in a user namespace.** `lib/sandbox.ts` builds a
+`bubblewrap` argv whose only bind is the account's own home, and
+`lib/terminal-manager.ts` replaces the shell command with it. Measured: a
+foreign home answers `No such file or directory` rather than `Permission
+denied`, `/etc/shadow` stays unreadable, and `uid=0` inside the namespace is
+not host root. The OS-user-per-account route was measured and is unavailable
+on the target host — no root, no sudo, `setpriv` answers `setresuid failed` —
+and the namespace has the property that route would have broken: an
+unprivileged namespace maps the fake uid back onto the service account, so the
+service can still read and clean up after a tenant.
+
+- `sandboxed` is now part of `GET /api/terminal` and `GET /api/terminal/<id>`.
+  Without `bubblewrap` or with user namespaces disabled the shell still opens,
+  unconfined, and the flag is `false` — the key is always present, never
+  absent, so a client does not have to tell "not isolated" from "unknown".
+- A working directory outside the account's home is refused as
+  `cwd-outside-home` with a remediation, rather than passed through to fail
+  later as `[Process exited with code 1]` in the SSE stream. A username that
+  would escape its path segment is refused as `bad-username` instead of
+  borrowing the unrelated `no-home` reason.
+- Bind sources that the host does not have are skipped. `bwrap` aborts on a
+  missing `--ro-bind` source rather than ignoring it, so a host without
+  `/lib64` previously lost the terminal entirely.
+- The Docker image installs `bubblewrap`. It is the one host where every
+  terminal otherwise took the `bwrap-missing` branch.
+
+### Accounts
+
+- Uploads in the file explorer land in the directory the user is looking at,
+  not in the project root. `cwd` was passed down the upload chain where the
+  current browse position was meant.
+- Account creation checks `OMP_WEB_HOME_ROOT` before it creates anything, so a
+  failure names the variable to set instead of surfacing a raw `EACCES` from
+  `mkdir`. An existing, writable root is accepted even when its parent is
+  read-only, and a root writable through group ownership is no longer
+  refused.
+
 ## v0.9.0
 
 The first release of the independent distribution. 98 files, +13,793/−352,

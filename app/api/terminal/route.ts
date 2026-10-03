@@ -33,6 +33,10 @@ function toInfo(info: TerminalInfo) {
     createdAt: info.createdAt,
     lastActivityAt: info.lastActivityAt,
     owner: info.owner,
+    // Gehoert in die Antwort, weil "isoliert" sonst nur eine Behauptung im
+    // Modulkommentar waere. Der Schluessel fehlt nie: auf einem Host ohne
+    // `bwrap` ist er `false`, nicht abwesend.
+    sandboxed: info.sandboxed,
   };
 }
 

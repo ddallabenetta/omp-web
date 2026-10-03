@@ -9,6 +9,8 @@ interface TerminalSummary {
   status: "running" | "exited";
   shell: string;
   createdAt: number;
+  /** Kommt aus der Route; `false` heisst "diese Shell laeuft unisoliert". */
+  sandboxed: boolean;
 }
 
 interface Props {

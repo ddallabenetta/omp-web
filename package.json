@@ -1,6 +1,6 @@
 {
   "name": "omp-web",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Web view for the omp (oh-my-pi) coding agent CLI",
   "homepage": "https://github.com/ddallabenetta/omp-web#readme",
   "repository": {

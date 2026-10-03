@@ -18,7 +18,7 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } = require("node:crypto");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } = require("node:fs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { homedir } = require("node:os");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -182,6 +182,101 @@ function resolveHomeRoot(env = process.env) {
  */
 function resolveAccountHome(username, env = process.env) {
   return join(resolveHomeRoot(env), username);
+}
+
+/**
+ * Kann der Dienst unter der Home-Wurzel ueberhaupt Verzeichnisse anlegen?
+ *
+ * Ohne diese Pruefung endet jedes `createWebAccount` in einem nackten
+ * `EACCES: permission denied, mkdir '/home/xy'`. Das ist gemessen worden
+ * (2026-10-03, `/home` ist `root:root 0755`, der Dienst laeuft
+ * unprivilegiert) und sagt dem Admin nichts: nicht, welcher Pfad falsch ist,
+ * nicht, dass er ihn waehlen kann, und nicht, dass ein Home-Root unter `/`
+ * grundsaetzlich nicht beschreibbar ist.
+ *
+ * Geprueft wird nicht der Zielordner selbst, sondern der **Elternteil**: der
+ * muss existieren und fuer diesen Prozess beschreibbar sein. Fehlt er, ist das
+ * die loesbare Variante; ist er da und trotzdem nicht beschreibbar, dann
+ * braucht es `chown` oder einen root-Setup-Schritt, und genau das steht im
+ * Remediation-Text.
+ *
+ * Bewusst kein `mkdir -p` hier: diese Funktion soll nichts anlegen. Eine
+ * Kontoanlage, die nebenbei eine Wurzel erzeugt, waere eine Nebenwirkung mit
+ * Rootrechten, die niemand bestellt hat.
+ */
+function checkHomeRootWritable(env = process.env) {
+  const root = resolveHomeRoot(env);
+
+  // Existiert die Wurzel schon, ist nur sie relevant. Die Eltern zu pruefen war
+  // hier falsch: es wird nichts mehr erstellt, sondern nur noch in eine
+  // vorhandene Wurzel hineingeschrieben — ein nicht beschreibbares Eltern
+  // verhindert das nicht. Vorher bekam man bei einem existierenden, korrekt
+  // berechtigten Root eine Ablehnung, die der Admin nicht beheben konnte, ohne
+  // Rechte an einem Verzeichnis zu veraendern, das nie benutzt wird.
+  if (existsSync(root)) {
+    if (isWritableDirectory(root)) return { ok: true, root };
+    return {
+      ok: false,
+      root,
+      detail: `${root} exists but is not writable by the service user (uid ${process.getuid() ?? "?"}).`,
+      remediation: `Point OMP_WEB_HOME_ROOT at a directory the service user can write, or have an administrator chown ${root} to it.`,
+    };
+  }
+
+  const parent = dirname(root);
+  let parentStat;
+  try {
+    parentStat = statSync(parent);
+  } catch {
+    return {
+      ok: false,
+      root,
+      detail: `${parent} does not exist, so ${root} cannot be created.`,
+      remediation: `Point OMP_WEB_HOME_ROOT at a path that already exists, or create ${parent} and give the service user write access to it.`,
+    };
+  }
+  if (!parentStat.isDirectory()) {
+    return {
+      ok: false,
+      root,
+      detail: `${parent} is not a directory.`,
+      remediation: `OMP_WEB_HOME_ROOT=${root} cannot work because its parent ${parent} is not a directory.`,
+    };
+  }
+  // Writable = no sticky bit, and either we own it or a group we belong to or
+  // the world may write. A sticky directory (like /tmp) is deliberately not
+  // enough: the service could create a home there, but it could not then repair
+  // or remove one that a previous run left behind.
+  if (!isWritableDirectory(parent)) {
+    return {
+      ok: false,
+      root,
+      detail: `${parent} is not writable by the service user (uid ${process.getuid() ?? "?"}).`,
+      remediation: `Set OMP_WEB_HOME_ROOT to a directory the service user can write, for example a path under its own home, or have an administrator chown ${parent} to it.`,
+    };
+  }
+  return { ok: true, root };
+}
+
+function isWritableDirectory(dir) {
+  try {
+    const stat = statSync(dir);
+    const uid = process.getuid?.();
+    if (typeof uid === "number" && uid === 0) return true;
+    if (typeof uid === "number" && uid === stat.uid) return true;
+    if ((stat.mode & 0o1000) !== 0) return false; // sticky: not a service root
+    // Gruppen-Schreibrecht: ein 0o770-Verzeichnis, das einer Gruppe gehoert, in
+    // der der Dienst ist, ist genau so benutzbar wie eines in eigener Hand. Ohne
+    // diesen Zweig wurde es als unbeschreibbar abgelehnt und der Admin musste
+    // Rechte an einem brauchbaren Verzeichnis veraendern.
+    if ((stat.mode & 0o020) !== 0) {
+      const groups = process.getgroups?.() ?? [];
+      if (groups.includes(stat.gid)) return true;
+    }
+    return (stat.mode & 0o002) !== 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Reject passwords that cannot protect anything. Returns an error message, or null when acceptable. */
@@ -626,8 +721,10 @@ function listWebAccounts(options = {}) {
  * Anmeldeschleife, die sich selbst Rechte gibt.
  *
  * Rechte `0o700`, Besitzer der Prozessbenutzer. Das ist eine echte Grenze
- * innerhalb des Hosts — die einzige hier, denn der Prozess selbst laeuft
- * weiterhin ohne uid-Wechsel (siehe `lib/web-auth.ts`).
+ * innerhalb des Hosts. Sie war lange die einzige — der Prozess selbst laeuft
+ * weiterhin ohne uid-Wechsel (siehe `lib/web-auth.ts`). Die zweite ist die
+ * Terminal-Shell, die seit `lib/sandbox.ts` in einer User-Namespace laeuft und
+ * dieses Verzeichnis gar nicht sieht.
  */
 function createWebAccount(username, password, options = {}) {
   const env = options.env ?? process.env;
@@ -650,9 +747,24 @@ function createWebAccount(username, password, options = {}) {
   // Verzeichnis zuerst: existiert es schon, ist der Name vergeben, auch wenn
   // der Datensatz fehlt. Ohne diese Reihenfolge bekamme man ein Konto ohne
   // Home und waere es nicht mehr los.
+  //
+  // Die Vorabpruefung des Elternverzeichnisses steht davor, weil der
+  // `mkdir` sonst mit einem nackten `EACCES` abbricht und damit die einzige
+  // Stelle verschleiert, an der der Admin etwas aendern kann.
+  const homeRoot = checkHomeRootWritable(env);
+  if (!homeRoot.ok) {
+    throw new Error(`Cannot create a home for this account: ${homeRoot.detail} ${homeRoot.remediation}`);
+  }
   const home = resolveAccountHome(name, env);
   if (existsSync(home)) throw new Error(`${home} already exists.`);
-  mkdirSync(home, { recursive: false, mode: 0o700 });
+  try {
+    mkdirSync(home, { recursive: false, mode: 0o700 });
+  } catch (error) {
+    // Der Parent war beschreibbar, das Anlegen scheiterte trotzdem. Dann ist
+    // es fast immer der Name (zu lang, vorhanden als Datei) — der Original-
+    // Fehler sagt das genauer als jede eigene Formulierung hier.
+    throw new Error(`Cannot create ${home}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   const now = timestamp();
   const entry = {
@@ -960,6 +1072,7 @@ module.exports = {
   WEB_ACCOUNTS_FILENAME,
   WEB_AUTH_FILENAME,
   WEB_AUTH_USERNAME,
+  checkHomeRootWritable,
   clearVerificationCache,
   clearWebPassword,
   consumeRecoveryCode,

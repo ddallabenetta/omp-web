@@ -12,9 +12,14 @@ the container has to be run:
   container starts with no sessions, no configuration and no model roles, and
   nothing it writes survives `docker rm`.
 - **It can run a high-privilege agent.** Whatever the container can reach, the
-  agent can change. The container boundary is the containment here — keep it
+  agent can change. The container boundary is the outer one here — keep it
   intact rather than widening it, and only mount the projects you want the
-  agent to touch.
+  agent to touch. Inside it, each account's terminal shell gets a second,
+  tighter one: the image installs `bubblewrap`, and `lib/sandbox.ts` runs the
+  shell in a user namespace whose only bind is that account's own home. Without
+  `bubblewrap` the shell would still open, unconfined, with `sandboxed: false`
+  in `GET /api/terminal` — the container is the reason to install it, not a
+  substitute for it.
 
 ## Quick start
 
