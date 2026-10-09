@@ -352,6 +352,31 @@
 .primaryButton:disabled { cursor: wait; opacity: .5; }
 .empty { height: 100%; display: grid; place-items: center; padding: 30px; color: var(--text-dim); font: 12px/1.6 var(--font-mono); text-align: center; }
 
+.phraseList { margin-bottom: 14px; }
+.phraseRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.phraseFields { min-width: 0; flex: 1 1 auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; }
+.phraseField, .phraseFieldWide { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.phraseFieldLabel { color: var(--text-dim); font: 700 9px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.phraseText { min-height: 34px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; outline: none; resize: vertical; background: var(--bg-panel); color: var(--text); font: 11px/1.5 var(--font-mono); }
+.phraseText:focus { border-color: var(--accent); }
+.addPhrase {
+  height: 33px;
+  padding: 0 13px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 700 11px var(--font-mono);
+}
+.addPhrase:hover { background: var(--bg-hover); color: var(--text); }
+
 @media (max-width: 760px) {
   .backdrop { padding: 8px; }
   .window { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 82px minmax(0, 1fr); border-radius: 10px; }
@@ -369,4 +394,5 @@
   .themeGrid { grid-template-columns: 1fr; }
   .mcpLayout { grid-template-columns: 1fr; }
   .mcpList { min-height: 180px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .phraseFields { grid-template-columns: 1fr; }
 }

@@ -48,6 +48,35 @@ service can still read and clean up after a tenant.
 - The Docker image installs `bubblewrap`. It is the one host where every
   terminal otherwise took the `bwrap-missing` branch.
 
+### Quick phrases
+
+**Saved texts are one click deep in the composer.** A phrase carries a button
+label and, separately, the text to insert. Each configured phrase renders as a
+button row above the input field; one click inserts its text **at the cursor
+position**, keeping the text to the left and right of the caret untouched. The
+full text is the button's tooltip, so a short caption can carry a long or
+multi-line insertion.
+
+- Managed in Settings → Quick phrases. The list is the button order; there is
+  no separate sorting, grouping or shortcut layer, by design.
+- Stored in `localStorage` as `omp-quick-phrases`, like the other purely visual
+  settings. The agent never reads these, so they deliberately do **not** go
+  through `/api/settings` — that endpoint projects a schema owned by a pinned
+  package, and extending it would mean patching `node_modules`.
+- A phrase without a non-empty `text` is dropped on read and on write: a button
+  that inserts nothing is a silent malfunction. An empty label is allowed and
+  falls back to the text, shortened to one line.
+- The row does not wrap. On a 390 px screen with twenty phrases it stays a
+  single 18 px-tall line that scrolls horizontally (measured: `scrollWidth`
+  1540 vs `clientWidth` 330), so every phrase remains one click deep instead of
+  costing three rows of transcript height.
+- Storage is best-effort behind `try/catch`: private mode, a `SecurityError`
+  or a full quota yields an empty list rather than a crash. The list is not
+  synced between browsers, and a phrase with an empty `text` does not survive a
+  reload.
+- The button label is user content and is never translated; only the settings
+  section's own strings are.
+
 ### Accounts
 
 - Uploads in the file explorer land in the directory the user is looking at,

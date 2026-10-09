@@ -29,6 +29,8 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePopupPlacement } from "@/hooks/usePopupPlacement";
 import { computePopupPlacement, preferredPopupHeight, POPUP_GAP_PX, type PopupSide } from "@/lib/popup-placement";
 import { useI18n } from "@/hooks/useI18n";
+import { useQuickPhrases } from "@/hooks/useQuickPhrases";
+import { quickPhraseCaption } from "@/lib/quick-phrases";
 import { PRESET_DEFAULT, PRESET_FULL } from "@/lib/tool-presets";
 
 export interface AttachedImage {
@@ -395,6 +397,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
+  // Modul-Store statt Prop-Kette: der Settings-Dialog schreibt hier hinein und
+  // der Composer dieser Instanz liest, ohne dass ein Reload dazwischenliegt.
+  const quickPhrases = useQuickPhrases();
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [modelDropdownRect, setModelDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);
@@ -449,6 +454,44 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const pendingImageCountRef = useRef(0);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
+
+  /**
+   * Fuegt Text an der Cursorposition ein.
+   *
+   * Aus dem Imperativ-Handle herausgezogen, weil die Quick-Phrases-Knoepfe
+   * dieselbe Routine brauchen, aber den Handle des Composers nicht erreichen
+   * koennen — sie werden innerhalb derselben Komponente gerendert. Der Handle
+   * delegiert nur noch hierher, damit @-Erwaehnungen und das
+   * set_editor_text-Events unveraendert denselben Code nehmen.
+   *
+   * `valueRef` wird bewusst mitgepflegt: der Snapshot haelt den Wert fuer
+   * Send und Draft-Restore synchron, auch wenn der State noch nicht geflusht
+   * ist (siehe Kommentar beim Restore-Pfad weiter oben).
+   */
+  const insertTextAtCursor = useCallback((text: string) => {
+    const ta = textareaRef.current;
+    if (!ta) {
+      setValue((v) => v + (v ? " " : "") + text);
+      return;
+    }
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? ta.value.length;
+    const before = ta.value.slice(0, start);
+    const after = ta.value.slice(end);
+    const sep = before.length > 0 && !before.endsWith(" ") ? " " : "";
+    const newVal = before + sep + text + after;
+    valueRef.current = newVal;
+    setValue(newVal);
+    setAtQuery(null);
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      const pos = start + sep.length + text.length;
+      ta.setSelectionRange(pos, pos);
+      ta.focus();
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    });
+  }, []);
 
   useImperativeHandle(ref, () => ({
     insertIfEmpty(text: string) {
@@ -602,30 +645,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
       });
     },
-    insertText(text: string) {
-      const ta = textareaRef.current;
-      if (!ta) {
-        setValue((v) => v + (v ? " " : "") + text);
-        return;
-      }
-      const start = ta.selectionStart ?? ta.value.length;
-      const end = ta.selectionEnd ?? ta.value.length;
-      const before = ta.value.slice(0, start);
-      const after = ta.value.slice(end);
-      const sep = before.length > 0 && !before.endsWith(" ") ? " " : "";
-      const newVal = before + sep + text + after;
-      valueRef.current = newVal;
-      setValue(newVal);
-      setAtQuery(null);
-      requestAnimationFrame(() => {
-        if (!ta) return;
-        const pos = start + sep.length + text.length;
-        ta.setSelectionRange(pos, pos);
-        ta.focus();
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-      });
-    },
+    insertText: insertTextAtCursor,
     addImages(files: File[]) {
       processImageFiles(files);
     },
@@ -1506,6 +1526,61 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   </svg>
                 </button>
               </div>
+            ))}
+          </div>
+        )}
+
+        {/* Quick phrases: eine Zeile ueber dem Eingabefeld, ein Klick fuegt den
+            Text an der Cursorposition ein. Ohne Phrasen wird nichts gerendert —
+            kein leerer Container, keine Trennlinie. Umbruch ist bewusst
+            verboten: der waagerechte Scroll haelt jeden Knopf mit einem Klick
+            erreichbar, auch wenn es auf 390px zehn oder zwanzig Phrasen sind. */}
+        {quickPhrases.length > 0 && (
+          <div
+            data-testid="composer-quick-phrases"
+            className="composerRow"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              flexWrap: "nowrap",
+              overflowX: "auto",
+              whiteSpace: "nowrap",
+              scrollbarWidth: "thin",
+              marginBottom: 6,
+              // Auf dem Handy verliert eine Scrollleiste Platz, die fuer
+              // nichts gebraucht wird; dafuer der Finger-Scroll.
+              WebkitOverflowScrolling: "touch",
+            }}
+          >
+            {quickPhrases.map((phrase, index) => (
+              <button
+                key={`${index}-${phrase.text}`}
+                type="button"
+                className="omp-press"
+                title={phrase.text}
+                onClick={() => insertTextAtCursor(phrase.text)}
+                style={{
+                  flexShrink: 0,
+                  padding: "3px 9px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 999,
+                  background: "var(--bg-panel)",
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                  font: "10px var(--font-mono)",
+                }}
+                onMouseEnter={(event) => {
+                  event.currentTarget.style.background = "var(--bg-hover)";
+                  event.currentTarget.style.color = "var(--text)";
+                }}
+                onMouseLeave={(event) => {
+                  event.currentTarget.style.background = "var(--bg-panel)";
+                  event.currentTarget.style.color = "var(--text-muted)";
+                }}
+              >
+                {quickPhraseCaption(phrase)}
+              </button>
             ))}
           </div>
         )}

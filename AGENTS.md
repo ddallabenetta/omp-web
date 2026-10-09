@@ -318,6 +318,24 @@ TypeScript half type-checks against — keep the two in sync.
 - `hooks/useAudio.ts` stores the toggle in `localStorage` as `omp-sound-enabled` and reuses one `AudioContext`.
 - Browser autoplay policy means sound must be unlocked from a user gesture; `ChatInput` calls the unlock hook from interactive controls, and `ChatWindow` plays the tone from `onAgentEnd`.
 
+### Quick phrases
+- `lib/quick-phrases.ts` stores the phrase list in `localStorage` as
+  `omp-quick-phrases`, best-effort behind `try/catch`. Read and write are
+  wrapped separately, so a blocked storage (private mode, `SecurityError`,
+  quota) yields an empty list instead of a crash.
+- **A phrase without a non-empty `text` is dropped** on both read and write —
+  a button that inserts nothing is a silent malfunction. An empty `label` is
+  legal and falls back to the text, shortened by `quickPhraseCaption`.
+- `hooks/useQuickPhrases.ts` is the module store (`useSyncExternalStore`,
+  pattern of `useDisplaySettings`): the settings dialog and the composer are
+  separate subtrees, so a store replaces a prop chain without a reload.
+- The composer row sits above the input (`ChatInput`, before the `Main input`
+  anchor) and reuses `insertTextAtCursor`. Wrapping is deliberately off — the
+  row scrolls horizontally (`overflowX: "auto"`), so twenty phrases stay one
+  click deep instead of costing three rows of transcript height.
+- The button label is user content and is therefore never translated; only the
+  settings section's own strings go through i18n.
+
 ### Exported session HTML
 - `/api/sessions/[id]/export` delegates to omp's export helper, then patches recursive tree helpers in the generated HTML to iterative versions so very deep linear sessions do not overflow the browser call stack.
 
