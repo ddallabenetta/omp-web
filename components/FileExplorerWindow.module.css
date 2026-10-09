@@ -258,7 +258,22 @@
  * Platz abgeben muesste — `flex: 1 1 auto` mit `width: 100%` nimmt die volle
  * Breite, und auf Mobil hebt die Media-Query unten `max-height` ohnehin auf.
  * Der Rand rechts bleibt weg: es gibt keinen Nachbarn mehr, dem er Trennen
- * zufuegen koennte. */
+ * zufuegen koennte.
+ *
+ * Die Bildlaufleiste ist hier ausdruecklich gestaltet, weil die globale aus
+ * `app/globals.css` diesen Abschnitt praktisch unsichtbar laesst: sie ist vier
+ * Pixel breit und zeichnet den Daumen in `var(--border)` auf `var(--bg)` — auf
+ * einem Fenster, das den halben Bildschirm fuellt, ist das eine Linie, die man
+ * nicht als Griff erkennt. Gemessen am laufenden Fenster: `scrollHeight` 1503
+ * gegen `clientHeight` 695, `offsetWidth` gleich `clientWidth`, und am rechten
+ * Rand kein Daumen im Bild. Der Baum scrollte also, nur sah es aus, als
+ * gaebe es nichts zu scrollen.
+ *
+ * Derselbe Massstab wie `.chat-session-scroll` in `app/globals.css`: acht
+ * Pixel, mit zwei Pixeln Rand um einen runden Daumen in `color-mix` aus
+ * `var(--text-dim)`, damit er sich vom Flaechenhintergrund loest. Die beiden
+ * Standard-Properties zuerst, weil Firefox die Webkit-Pseudoelemente nicht
+ * kennt und sonst weiterhin die globale vier Pixel breite Leiste zeichnet. */
 .explorer {
   flex: 1 1 auto;
   width: 100%;
@@ -266,6 +281,27 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-dim) 65%, transparent) transparent;
+}
+
+.explorer::-webkit-scrollbar {
+  width: 8px;
+}
+
+.explorer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.explorer::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-dim) 65%, transparent);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+.explorer::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text);
 }
 
 /* ---- Inhalt des aktiven Tabs ---- */
