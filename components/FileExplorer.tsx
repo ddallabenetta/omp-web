@@ -42,19 +42,62 @@ interface SelectionEntry {
 export interface ExplorerViewState {
   currentPath: string;
   expandedPaths: Set<string>;
+  /**
+   * Die besuchten Ordner als ein Stack mit Zeiger, nicht als zwei Stapel
+   * fuer zurueck und vorwaerts. Zwei Stapel laufen auseinander, sobald man
+   * zurueckblättert und dann irgendwo neu hinspringt: der Vorwaerts-Stapel
+   * wuerde stehen bleiben, während der zurueck bereits die neue Richtung
+   * beschreibt. Mit einem Index ist die Vergangenheit unabhaengig von der
+   * Zukunft, und ein Sprung schneidet einfach alles hinter dem Index ab.
+   *
+   * Der Stack gehoert zum Blick und damit zum Zustand des Fensters: das
+   * Fenster wird beim Schliessen aus dem DOM entfernt, und ohne diese
+   * Prop kaeme es beim naechsten Oeffnen mit leerer Historie zurueck.
+   */
+  history: NavigationHistory;
 }
 
 /**
- * Zwei Blicke gelten als gleich, wenn Pfad und aufgeklappte Ordner
+ * Besuchte Ordner, chronologisch, plus der Index des gerade gezeigten. Der
+ * Index ist immer ein gueltiger Eintrag: `paths` ist nie leer, und jeder
+ * Spritzger schreibt beide Seiten gemeinsam.
+ */
+export interface NavigationHistory {
+  paths: string[];
+  index: number;
+}
+
+/**
+ * Baut den Historie-Anfang zu einem Ordner. Wird an drei Stellen gebraucht —
+ * Erstmontage, Projektwechsel, Zuruecksetzen — und die Regeln des
+ * Abschneidens gehoeren an genau einer Stelle, nicht an drei.
+ */
+function historyStartingAt(path: string): NavigationHistory {
+  return { paths: [path], index: 0 };
+}
+
+/**
+ * Zwei Blicke gelten als gleich, wenn Pfad, aufgeklappte Ordner und Historie
  * uebereinstimmen. Der Vergleich entscheidet darueber, ob eine Meldung den
  * Zustand der aeusseren Instanz ueberhaupt anfasst: gibt der Melder denselben
  * Inhalt zurueck, bleibt der Zustand gleich und React rendert nicht neu.
  * Ohne diese Pruefung wuerden Fenster und Meldung einander hochschaukeln.
+ *
+ * Die Historie gehoert ausdruecklich dazu: nach einem Blaettern zurueck und
+ * wieder vorwaerts steht zwar `currentPath` kurzzeitig wieder auf demselben
+ * Wert wie vorher, die Historie aber nicht. Ohne ihren Vergleich wuerde das
+ * Fenster seinen gemeldeten Stand verlieren und beim Schliessen genau dort
+ * wieder aufnehmen, wo der Nutzer ihn bereits verlassen hatte.
  */
 function sameViewState(a: ExplorerViewState, b: ExplorerViewState): boolean {
   if (a.currentPath !== b.currentPath) return false;
   if (a.expandedPaths.size !== b.expandedPaths.size) return false;
   for (const path of a.expandedPaths) if (!b.expandedPaths.has(path)) return false;
+  if (a.history.index !== b.history.index) return false;
+  if (a.history.paths.length !== b.history.paths.length) return false;
+  for (let i = 0; i < a.history.paths.length; i++) {
+    if (a.history.paths[i] !== b.history.paths[i]) return false;
+  }
   return true;
 }
 
@@ -1082,6 +1125,27 @@ const TOOLBAR_BUTTON_STYLE: React.CSSProperties = {
 };
 
 /**
+ * Knopf der Navigationsleiste. Dieselbe Optik wie die Werkzeuge oben, nur mit
+ * dem deaktivierten Zustand, den ein Knopf braucht, am Anfang oder am Ende
+ * einer Strecke: sichtbar, aber nicht klickbar. Ein versteckter Knopf waere
+ * schlimmer — der Nutzer wuesste nicht, dass es zurueck geht, weil er schon
+ * zurueck ist.
+ *
+ * `flex-shrink: 0` steht in `TOOLBAR_BUTTON_STYLE` und ist hier Pflicht, nicht
+ * Kosmetik: auf einem Telefon ist die Leiste die einzige Breite, die es gibt,
+ * und ein schrumpfender Knopf wird unantiklickbar. Der Pfad daneben gibt
+ * Fläche ab (`flex: 1`, `minWidth: 0`), nicht die Knöpfe.
+ */
+function navButtonStyle(enabled: boolean): React.CSSProperties {
+  return {
+    ...TOOLBAR_BUTTON_STYLE,
+    color: enabled ? "var(--text-muted)" : "var(--text-dim)",
+    cursor: enabled ? "pointer" : "default",
+    opacity: enabled ? 1 : 0.45,
+  };
+}
+
+/**
  * Kopfzeile des Explorers: die Werkzeuge, die ohne Auswahl immer greifen, plus
  * die Auswahl-werkzeuge, die nur mit mindestens einem ausgewaehlten Knoten
  * sichtbar sind.
@@ -1705,6 +1769,14 @@ function TreeNode({
               onAtMention={onAtMention}
               expandedPaths={expandedPaths}
               onToggleExpanded={onToggleExpanded}
+              // `onNavigate` gehoert hierher, sonst bekommen die Zeilen unter
+              // einem aufgeklappten Ordner keinen Weg in den Ordner: `handleClick`
+              // ruft `onNavigate?.(...)`, und ohne Prop faellt das `?.` fuer jede
+              // Zeile ab Ebene 1 auf den Zweig "nichts tun". Genau das war der
+              // gemessene Fehler — die oberste Ebene navigierte, jede darunter
+              // nicht. Die Seitenleiste nimmt damit dasselbe Verhalten wie das
+              // Fenster, und zwar das, das sie auf der obersten Ebene schon hat.
+              onNavigate={onNavigate}
               onContextMenu={onContextMenu}
               refreshToken={refreshToken}
               highlightedPaths={highlightedPaths}
@@ -1732,16 +1804,26 @@ function Breadcrumb({
   currentPath,
   projectRoot,
   homeDir,
+  canGoBack,
+  canGoForward,
   onNavigate,
   onNavigateUp,
   onNavigateHome,
+  onNavigateBack,
+  onNavigateForward,
+  t,
 }: {
   currentPath: string;
   projectRoot: string;
   homeDir: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
   onNavigate: (fullPath: string) => void;
   onNavigateUp: () => void;
   onNavigateHome: () => void;
+  onNavigateBack: () => void;
+  onNavigateForward: () => void;
+  t: Translate;
 }) {
   const canGoUp = currentPath !== "/" && currentPath !== projectRoot && getFileDirectory(currentPath) !== currentPath;
   const atHome = normalizeFilePathSlashes(currentPath) === normalizeFilePathSlashes(homeDir);
@@ -1765,102 +1847,117 @@ function Breadcrumb({
         fontSize: 11,
         fontFamily: "var(--font-mono)",
         color: "var(--text-muted)",
-        overflowX: "auto",
-        whiteSpace: "nowrap",
-        scrollbarWidth: "thin",
       }}
     >
+      {/* EINE Leiste fuer alle vier Wege, nicht vier Knöpfe an vier Orten.
+          Up und Home standen vorher hier, Back und Forward kommen dazu: sie
+          gehoeren zum selben Weg durch den Baum, und ein Nutzer, der zurueck
+          kann, sucht die Leiste, in der auch "eine Ebene hoeher" steht — nicht
+          einen zweiten Satz Knöpfe daneben.
+
+          Der Pfad ist die scrollendeFlaeche, die Knöpfe sind es nicht: ohne
+          `flex: 1` und `minWidth: 0` waere der Pfad die starre Komponente und
+          die Leiste auf einem Telefon breiter als das Panel, in dem sie steht. */}
       <button
-      className="omp-press"
+        className="omp-press"
+        type="button"
+        onClick={onNavigateBack}
+        disabled={!canGoBack}
+        title={t("files.navBack")}
+        aria-label={t("files.navBack")}
+        style={navButtonStyle(canGoBack)}
+        onMouseEnter={(event) => { if (canGoBack) event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M19 12H5" />
+          <polyline points="12 19 5 12 12 5" />
+        </svg>
+      </button>
+      <button
+        className="omp-press"
+        type="button"
+        onClick={onNavigateForward}
+        disabled={!canGoForward}
+        title={t("files.navForward")}
+        aria-label={t("files.navForward")}
+        style={navButtonStyle(canGoForward)}
+        onMouseEnter={(event) => { if (canGoForward) event.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M5 12h14" />
+          <polyline points="12 5 19 12 12 19" />
+        </svg>
+      </button>
+      <button
+        className="omp-press"
         type="button"
         onClick={onNavigateHome}
         disabled={atHome}
-        title={`Home (${homeDir})`}
-        aria-label={`Home directory ${homeDir}`}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 20,
-          height: 20,
-          padding: 0,
-          background: "transparent",
-          border: "none",
-          borderRadius: 4,
-          color: atHome ? "var(--text-dim)" : "var(--text-muted)",
-          cursor: atHome ? "default" : "pointer",
-          opacity: atHome ? 0.5 : 1,
-        }}
+        title={`${t("files.navHome")} (${homeDir})`}
+        aria-label={`${t("files.navHome")} ${homeDir}`}
+        style={navButtonStyle(!atHome)}
         onMouseEnter={(event) => { if (!atHome) event.currentTarget.style.background = "var(--bg-hover)"; }}
         onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
           <polyline points="9 22 9 12 15 12 15 22" />
         </svg>
       </button>
       <button
-      className="omp-press"
+        className="omp-press"
         type="button"
         onClick={onNavigateUp}
         disabled={!canGoUp}
-        title="Up one directory"
-        aria-label="Up one directory"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 20,
-          height: 20,
-          padding: 0,
-          background: "transparent",
-          border: "none",
-          borderRadius: 4,
-          color: canGoUp ? "var(--text-muted)" : "var(--text-dim)",
-          cursor: canGoUp ? "pointer" : "default",
-          opacity: canGoUp ? 1 : 0.4,
-          marginRight: 4,
-        }}
+        title={t("files.navUp")}
+        aria-label={t("files.navUp")}
+        style={navButtonStyle(canGoUp)}
         onMouseEnter={(event) => { if (canGoUp) event.currentTarget.style.background = "var(--bg-hover)"; }}
         onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="m18 15-6-6-6 6" />
         </svg>
       </button>
-      {segments.map((segment, index) => {
-        const isLast = index === segments.length - 1;
-        return (
-          <span key={segment.fullPath} style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-            <button
-            className="omp-press"
-              type="button"
-              onClick={() => onNavigate(segment.fullPath)}
-              title={segment.fullPath}
-              style={{
-                padding: "1px 5px",
-                background: "transparent",
-                border: "none",
-                borderRadius: 3,
-                color: isLast ? "var(--text)" : "var(--text-muted)",
-                fontWeight: isLast ? 500 : 400,
-                fontSize: 11,
-                fontFamily: "var(--font-mono)",
-                cursor: "pointer",
-                maxWidth: 180,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              onMouseEnter={(event) => { if (!isLast) event.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
-            >
-              {segment.name}
-            </button>
-            {!isLast && <span style={{ color: "var(--text-dim)" }}>/</span>}
-          </span>
-        );
-      })}
+      {/* Der Rand zwischen den Wegen und dem Pfad: ohne ihn laesst die Leiste
+          einen Knopf und den ersten Pfadabschnitt zusammen lesen. */}
+      <span style={{ flex: "1 1 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2, overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "thin", paddingLeft: 4 }}>
+        {segments.map((segment, index) => {
+          const isLast = index === segments.length - 1;
+          return (
+            <span key={segment.fullPath} style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+              <button
+                className="omp-press"
+                type="button"
+                onClick={() => onNavigate(segment.fullPath)}
+                title={segment.fullPath}
+                style={{
+                  padding: "1px 5px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 3,
+                  color: isLast ? "var(--text)" : "var(--text-muted)",
+                  fontWeight: isLast ? 500 : 400,
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono)",
+                  cursor: "pointer",
+                  maxWidth: 180,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                onMouseEnter={(event) => { if (!isLast) event.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+              >
+                {segment.name}
+              </button>
+              {!isLast && <span style={{ color: "var(--text-dim)" }}>/</span>}
+            </span>
+          );
+        })}
+      </span>
     </div>
   );
 }
@@ -1949,6 +2046,13 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   // `initialViewState` hat Vorrang: es ist der Blick, den eine gerade neu
   // gemountete Instanz (das grosse Fenster) uebernimmt.
   const [currentPath, setCurrentPath] = useState<string>(initialViewState?.currentPath ?? cwd);
+  // Die besuchten Ordner. Startet beim Ordner, den die Ansicht zeigt — nicht
+  // beim Projektwurzel-`cwd`: sonst stuende der Index in einem Fenster, das
+  // mitten in der Historie aufmacht, auf einem Eintrag, den es gar nicht
+  // besucht hat, und `currentPath` stuende neben dem Stack.
+  const [history, setHistory] = useState<NavigationHistory>(
+    initialViewState?.history ?? historyStartingAt(initialViewState?.currentPath ?? cwd),
+  );
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
   // Bestaetigung fuer den Refresh-Button. Zwei Sekunden gruen, dann faellt der
   // Haken wieder weg — ohne sie bliebe bei unveraendertem Baum kein Merkmal,
@@ -2003,8 +2107,8 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
    * Zustand der aufrufenden Seite unberuehrt lassen.
    */
   useEffect(() => {
-    onViewStateChange?.({ currentPath, expandedPaths });
-  }, [currentPath, expandedPaths, onViewStateChange]);
+    onViewStateChange?.({ currentPath, expandedPaths, history });
+  }, [currentPath, expandedPaths, history, onViewStateChange]);
 
   const gitStatusByPath = useMemo(() => new Map(
     gitFiles.map((status) => [normalizeFilePathSlashes(status.filePath), status]),
@@ -2043,20 +2147,75 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     // Navigation collapses the previously expanded branches so the new
     // starting point is a clean view; the user can re-expand from there.
     setExpandedPaths(new Set());
+    // Jeder Sprung in einen Ordner gehoert in die Historie, egal ob er vom
+    // Zeilenklick, vom Breadcrumb, von Up oder von Home kam: zurueck soll den
+    // Weg zuruecknehmen, den der Nutzer gegangen ist, nicht nur einen Teil
+    // davon. Steht der Pfad schon an der Spitze, wird nichts eingetragen —
+    // sonst wuesste die Historie bei jedem Klick auf den Ordner, in dem man
+    // bereits ist, und der Weg waere nicht mehr abzaehlbar.
+    setHistory((prev) => {
+      if (prev.paths[prev.index] === fullPath) return prev;
+      // Alles nach dem Zeiger faellt weg. Genau das ist der Unterschied zum
+      // Blättern in der Historie: ein neuer Sprung ist ein neuer Weg und macht
+      // die alte Vorwaertsstrecke ungueltig, so wie im Browser.
+      const paths = [...prev.paths.slice(0, prev.index + 1), fullPath];
+      return { paths, index: paths.length - 1 };
+    });
   }, []);
 
   const handleNavigateUp = useCallback(() => {
-    setCurrentPath((prev) => {
-      const parent = getFileDirectory(prev);
-      return parent === prev ? prev : parent;
-    });
-    setExpandedPaths(new Set());
-  }, []);
+    // Der Elternordner aus dem aktuellen Pfad, nicht aus dem Updater: ein
+    // Updater muss eine reine Funktion sein, und React ruft ihn in der
+    // Entwicklung zweimal auf, um genau solche Seiteneffekte zu finden. Up ist
+    // damit eine ganz normale Navigation und geht durch `handleNavigate` —
+    // sonst stuende Up ausserhalb der Historie und waere der einzige Weg, den
+    // zurueck nicht zuruecknimmt.
+    const parent = getFileDirectory(currentPath);
+    if (parent === currentPath) return;
+    handleNavigate(parent);
+  }, [currentPath, handleNavigate]);
 
   const handleNavigateHome = useCallback(() => {
-    setCurrentPath(homeDir);
+    handleNavigate(homeDir);
+  }, [handleNavigate, homeDir]);
+
+  /**
+   * Ein Schritt zurueck in der Historie. Am Anfang gibt es nichts zu tun, und
+   * genau so verhaelt sich der Knopf: `disabled`, nicht abgelehnt. Der Weg
+   * fuehrt auf denselben Punkt wie `handleNavigate`, schreibt aber keinen
+   * neuen Eintrag — sonst wuerde zurueck die Liste verlaengern und man kaeme
+   * nie wieder von dort weg.
+   */
+  const handleNavigateBack = useCallback(() => {
+    // Aus dem Zustand, nicht aus einem Updater. `setCurrentPath` in einem
+    // `setHistory`-Updater waere ein Seiteneffekt in einer Funktion, die React
+    // in der Entwicklung zweimal aufruft, um genau solche zu finden — und die
+    // beiden Aufrufe koennten unterschiedliche Stacks sehen. `history` steht
+    // ohnehin im Scope, und die drei Setzer sind atomar genug: zwischen dem
+    // Lesen und dem Setzen laeuft kein weiterer Klick.
+    if (history.index <= 0) return;
+    const index = history.index - 1;
+    setCurrentPath(history.paths[index]);
     setExpandedPaths(new Set());
-  }, [homeDir]);
+    setHistory((prev) => ({ paths: prev.paths, index }));
+  }, [history]);
+
+  /**
+   * Ein Schritt vorwaerts, symmetrisch zu `handleNavigateBack`. Ohne sie waere
+   * das Zurueck eine Einbahnstrasse: nach einem Sprung in die Historie gaebe es
+   * keinen Weg mehr zum Ordner, aus dem man gekommen ist, und die Vorwaerts-
+   * Haelfte des Stacks waere toter Zustand.
+   */
+  const handleNavigateForward = useCallback(() => {
+    if (history.index >= history.paths.length - 1) return;
+    const index = history.index + 1;
+    setCurrentPath(history.paths[index]);
+    setExpandedPaths(new Set());
+    setHistory((prev) => ({ paths: prev.paths, index }));
+  }, [history]);
+
+  const canNavigateBack = history.index > 0;
+  const canNavigateForward = history.index < history.paths.length - 1;
 
   // Das Menue haengt an einer Zeile, nicht an einem Element: der Pfad wandert
   // mit dem Navigieren mit, und ein Klick auf Breadcrumb, Leerflaeche oder eine
@@ -2396,6 +2555,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setPendingConflict(null);
       setUploadError(null);
       setCurrentPath(cwd);
+      // Die Historie gehoert zum alten Projekt: zurueck und vorwaerts ueber
+      // Ordner des vorherigen Projekts zu fuehren ist kein Weg, den jemand
+      // bewusst gegangen ist. Sie faellt mit dem Pfad auf den neuen Start zurueck.
+      setHistory(historyStartingAt(cwd));
     }
 
     setLoading(firstRun || cwdChanged);
@@ -2645,9 +2808,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                 currentPath={currentPath}
                 projectRoot={cwd}
                 homeDir={homeDir}
+                canGoBack={canNavigateBack}
+                canGoForward={canNavigateForward}
                 onNavigate={handleNavigate}
                 onNavigateUp={handleNavigateUp}
                 onNavigateHome={handleNavigateHome}
+                onNavigateBack={handleNavigateBack}
+                onNavigateForward={handleNavigateForward}
+                t={t}
               />
               {roots.map((node) => (
                 <TreeNode
