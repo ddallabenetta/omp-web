@@ -399,7 +399,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const isMobile = useIsMobile();
   // Modul-Store statt Prop-Kette: der Settings-Dialog schreibt hier hinein und
   // der Composer dieser Instanz liest, ohne dass ein Reload dazwischenliegt.
-  const quickPhrases = useQuickPhrases();
+  const { phrases: quickPhrases } = useQuickPhrases();
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [modelDropdownRect, setModelDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);

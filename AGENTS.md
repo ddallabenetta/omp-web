@@ -88,6 +88,7 @@ app/api/
   models-config/discover/route.ts POST fetch a configured provider's upstream model list
   models-config/test/route.ts     POST test a configured model/provider
   plugins/route.ts                GET/POST omp plugin management
+  quick-phrases/route.ts          GET/PUT the account's composer phrase list
   skills/route.ts                 GET/PATCH loaded skills and disable-model-invocation
   skills/install/route.ts         POST install skills through npx skills add
   web-access/route.ts             GET/PUT the password lock (settings -> Access)
@@ -319,16 +320,48 @@ TypeScript half type-checks against — keep the two in sync.
 - Browser autoplay policy means sound must be unlocked from a user gesture; `ChatInput` calls the unlock hook from interactive controls, and `ChatWindow` plays the tone from `onAgentEnd`.
 
 ### Quick phrases
-- `lib/quick-phrases.ts` stores the phrase list in `localStorage` as
-  `omp-quick-phrases`, best-effort behind `try/catch`. Read and write are
-  wrapped separately, so a blocked storage (private mode, `SecurityError`,
-  quota) yields an empty list instead of a crash.
-- **A phrase without a non-empty `text` is dropped** on both read and write —
-  a button that inserts nothing is a silent malfunction. An empty `label` is
-  legal and falls back to the text, shortened by `quickPhraseCaption`.
+- `lib/quick-phrases.ts` holds the shape, the validation, the defaults and the
+  caption — no `fs`, no `fetch`, so the browser bundle and the route share it.
+  It must **not** go through `/api/settings`: that endpoint projects a schema
+  owned by a pinned package, and these phrases are not part of it. The agent
+  never reads them either; they are composer input.
+- **The list lives on the server, one file per account.**
+  `app/api/quick-phrases/route.ts` (GET/PUT) follows the `models-config` route:
+  `requireIdentity`, 403 in both handlers, 415 without a JSON content type. The
+  file is `omp-web-quick-phrases.json` inside `resolveTenantAgentDir(identity)`,
+  written with `writePrivateFileAtomicSync` (0o600, temp file + rename).
+- The `omp-web-` prefix matches `omp-web-trusted-projects.json` in
+  `lib/project-trust.ts`: the file lives in the agent directory but is not omp
+  configuration and must never be read or overwritten by omp.
+- **The path is checked before the directory is created.**
+  `requireIdentity` calls `isQuickPhrasesPathAllowed`, which runs
+  `isPathWithinRoots` against `getUserHome(identity)` — the same ordering as
+  `app/api/default-cwd/route.ts`. Creating first and checking afterwards leaves
+  a file in a foreign home for every refused request.
+- `exists` in the GET response is the seed flag. A file that exists with an
+  empty list is a decision by the user and is never topped up; a missing file
+  is the only case that may seed, once.
+- **Migration from the browser-only version** (`omp-quick-phrases` plus
+  `omp-quick-phrases-seeded`) runs at the first server fetch: local phrases move
+  to the file, and the defaults are seeded only when *both* legacy keys are
+  absent. The legacy keys are cleared **after** the PUT succeeds, so a server
+  crash between read and write leaves the phrases in the browser to be offered
+  again. `lib/quick-phrases.test.mjs` guards those three cases.
 - `hooks/useQuickPhrases.ts` is the module store (`useSyncExternalStore`,
   pattern of `useDisplaySettings`): the settings dialog and the composer are
   separate subtrees, so a store replaces a prop chain without a reload.
+  `loadQuickPhrases()` is single-flight, so composer and dialog mounted at the
+  same time produce one GET, not two. A failed request sets `error` and leaves
+  the last seen list standing — nothing is cleared and nothing sticks in the
+  loading state.
+- **Typing is debounced in `components/QuickPhrasesConfig.tsx` (400 ms), not in
+  the store.** `setQuickPhrases(next, false)` updates every subscriber at once
+  and skips the PUT; the timer writes once. It also fires on `onBlur` and on
+  unmount. Delete and Add persist immediately — a delete that waits for a
+  debounce window looks to the user like the row came back.
+- **A phrase without a non-empty `text` is dropped** on read and on write —
+  a button that inserts nothing is a silent malfunction. An empty `label` is
+  legal and falls back to the text, shortened by `quickPhraseCaption`.
 - The composer row sits above the input (`ChatInput`, before the `Main input`
   anchor) and reuses `insertTextAtCursor`. Wrapping is deliberately off — the
   row scrolls horizontally (`overflowX: "auto"`), so twenty phrases stay one

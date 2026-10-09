@@ -59,10 +59,28 @@ multi-line insertion.
 
 - Managed in Settings → Quick phrases. The list is the button order; there is
   no separate sorting, grouping or shortcut layer, by design.
-- Stored in `localStorage` as `omp-quick-phrases`, like the other purely visual
-  settings. The agent never reads these, so they deliberately do **not** go
-  through `/api/settings` — that endpoint projects a schema owned by a pinned
-  package, and extending it would mean patching `node_modules`.
+- **The list is stored on the server, one file per account.**
+  `app/api/quick-phrases/route.ts` (GET/PUT) follows the `models-config` route:
+  `requireIdentity`, `403` in both handlers, `415` without a JSON content type.
+  The file is `omp-web-quick-phrases.json` inside
+  `resolveTenantAgentDir(identity)` — the same directory the trust store uses —
+  written with `writePrivateFileAtomicSync` (`0o600`, temp file plus rename).
+  The path is checked with `isPathWithinRoots` **before** the directory is
+  created, so a refused request leaves nothing behind in a foreign home.
+  A `localStorage` list followed the browser, not the account: a second browser,
+  a private window or a different workstation showed a different set, and
+  changing machine lost it silently. The agent never reads these phrases, so
+  they still do **not** go through `/api/settings` — that endpoint projects a
+  schema owned by a pinned package, and extending it would mean patching
+  `node_modules`.
+- **Existing phrases migrate without loss.** At the first server fetch, if no
+  file exists yet, the phrases from `omp-quick-phrases` move to the file. The
+  defaults are seeded only when *both* legacy keys are absent — the same rule
+  the old seed used, and for the same reason: overwriting a list the user
+  wrote, at the moment of the first read, before they ever see it, is the worst
+  thing a seed can do. The legacy keys are cleared after the `PUT` succeeds, so
+  a server that goes down in between leaves the phrases in the browser to be
+  offered again.
 - A phrase without a non-empty `text` is dropped on read and on write: a button
   that inserts nothing is a silent malfunction. An empty label is allowed and
   falls back to the text, shortened to one line.
@@ -70,12 +88,26 @@ multi-line insertion.
   single 18 px-tall line that scrolls horizontally (measured: `scrollWidth`
   1540 vs `clientWidth` 330), so every phrase remains one click deep instead of
   costing three rows of transcript height.
-- Storage is best-effort behind `try/catch`: private mode, a `SecurityError`
-  or a full quota yields an empty list rather than a crash. The list is not
-  synced between browsers, and a phrase with an empty `text` does not survive a
-  reload.
+- **Typing writes once, not once per letter.** The settings section debounces
+  400 ms and additionally writes on field blur and on dialog close, so closing
+  without touching anything else still persists. Delete and Add bypass the
+  timer: a delete that waits for a debounce window looks to the user like the
+  row came back.
+- A failing server does not clear or freeze the view. The last list the user
+  saw stays on screen and the settings section says what went wrong; a failed
+  request is retried on the next load. The first fetch is single-flight, so
+  composer and dialog mounted together cause one request, not two.
 - The button label is user content and is never translated; only the settings
   section's own strings are.
+- Seven defaults are seeded on the first fetch when there is nothing to
+  migrate: `Research`, `Compare`, `Verify`, `Explain`, `Review`, `Tests`,
+  `Fix`. The first three reach outward — they research a topic or compare
+  options instead of talking about the code in the window, which is why they
+  work with an empty input field. **Seen once, never again:** the existence of
+  the file is what decides, not the list contents. Delete all seven and they
+  stay gone, on every tab, every browser and across reloads. A file that exists
+  but is empty is a decision, and an unreadable file counts as existing too —
+  neither is topped up.
 
 ### Accounts
 
