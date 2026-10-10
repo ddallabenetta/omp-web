@@ -19,6 +19,7 @@ import {
   MAX_ATTACHED_IMAGES,
   isBase64ImageWithinLimits,
 } from "@/lib/image-attachments";
+import { downscaleImageFile } from "@/lib/image-downscale";
 import {
   buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
@@ -283,6 +284,20 @@ function revokeImagePreview(image: AttachedImage): void {
   if (image.previewUrl.startsWith("blob:")) {
     URL.revokeObjectURL(image.previewUrl);
   }
+}
+
+/** Read a file into the bare base64 payload the agent command carries. */
+function readFileAsBase64(file: File): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const reader = new FileReader();
+  reader.onload = () => {
+    // A data URL reads back as "data:<mime>;base64,<payload>".
+    const result = reader.result as string;
+    resolve(result.slice(result.indexOf(",") + 1));
+  };
+  reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`));
+  reader.readAsDataURL(file);
+  return promise;
 }
 
 function QueuedMessageRow({ kind, text }: { kind: "steer" | "follow-up"; text: string }) {
@@ -637,30 +652,30 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       MAX_ATTACHED_IMAGES - attachedImagesRef.current.length - pendingImageCountRef.current,
     );
     const imageFiles = files
-      .filter((f) => f.type.startsWith("image/") && f.size <= MAX_ATTACHED_IMAGE_BYTES)
+      .filter((f) => f.type.startsWith("image/"))
       .slice(0, remaining);
     if (!imageFiles.length) return;
     pendingImageCountRef.current += imageFiles.length;
     try {
       const newImages = await Promise.all(
-        imageFiles.map(
-          (file) =>
-            new Promise<AttachedImage>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const result = reader.result as string;
-                // result is "data:<mime>;base64,<data>"
-                const base64 = result.split(",")[1];
-                resolve({ data: base64, mimeType: file.type, previewUrl: URL.createObjectURL(file) });
-              };
-              reader.onerror = reject;
-              reader.readAsDataURL(file);
-            })
-        )
+        imageFiles.map(async (file) => {
+          // Shrink before the send, not after: a full-resolution photo is
+          // several MB of base64, and a handful of them overflows the request
+          // body the transport accepts. Downscaling here keeps the attachment
+          // instead of silently dropping it once it no longer fits.
+          const scaled = await downscaleImageFile(file);
+          if (scaled.size > MAX_ATTACHED_IMAGE_BYTES) return null;
+          return {
+            data: await readFileAsBase64(scaled),
+            mimeType: scaled.type,
+            previewUrl: URL.createObjectURL(scaled),
+          };
+        })
       );
+      const usable = newImages.filter((image): image is AttachedImage => image !== null);
       setAttachedImages((prev) => {
-        const accepted = newImages.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - prev.length));
-        newImages.slice(accepted.length).forEach(revokeImagePreview);
+        const accepted = usable.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - prev.length));
+        usable.slice(accepted.length).forEach(revokeImagePreview);
         const next = [...prev, ...accepted];
         attachedImagesRef.current = next;
         return next;

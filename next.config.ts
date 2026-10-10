@@ -35,6 +35,23 @@ const nextConfig: NextConfig = {
     "@oh-my-pi/pi-tui",
     "@oh-my-pi/pi-utils",
   ],
+
+  experimental: {
+    /**
+     * `proxy.ts` matches `/api/:path*`, so Next refuses oversized bodies with
+     * its default 10 MB limit before any route handler runs.
+     *
+     * A chat prompt carries its images inline as base64, which inflates them
+     * by 4/3, so the documented allowance of 10 images × 10 MB could never
+     * actually be sent. This value covers `MAX_ATTACHED_IMAGES_TOTAL_BYTES`
+     * plus that inflation and a margin for the JSON envelope — the transport
+     * is sized to the server-side budget, not the other way round.
+     *
+     * Keep in sync with `MIN_PROXY_CLIENT_MAX_BODY_SIZE` in
+     * `lib/image-attachments.ts`; a test asserts they agree.
+     */
+    proxyClientMaxBodySize: "32mb",
+  },
   webpack: (config, { isServer, nextRuntime }) => {
     if (!isServer || nextRuntime === "edge") {
       // instrumentation.ts has a Node-only dynamic import guarded by
