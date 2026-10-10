@@ -3,6 +3,22 @@ import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession } from "@/lib/rpc-manager";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
+/**
+ * Request-body ceiling this route accepts, matching
+ * `experimental.proxyClientMaxBodySize` in `next.config.ts`. Kept slightly
+ * under the Next limit so the handler answers with a reason instead of the
+ * proxy dropping the connection.
+ */
+const MAX_REQUEST_BODY_BYTES = 30 * 1024 * 1024;
+
+/** Trusted Content-Length, or null when absent or not a plain integer. */
+function declaredBodyLength(req: Request): number | null {
+  const header = req.headers.get("content-length");
+  if (!header || !/^\d+$/.test(header)) return null;
+  const length = Number(header);
+  return Number.isSafeInteger(length) ? length : null;
+}
+
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
   req: Request,
@@ -13,6 +29,21 @@ export async function POST(
   }
   if (!hasJsonContentType(req)) {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
+
+  // `proxy.ts` matches this route and refuses oversized bodies at the Next
+  // limit, which reaches the client as a bare 413 with no explanation. This
+  // guard runs first, so an over-budget prompt gets the same `prompt_rejected`
+  // shape the client already knows how to react to — with a reason it can
+  // show. It only reads Content-Length; chunked requests still fall through to
+  // the proxy, and `validateAgentImages` re-checks the decoded sizes either way.
+  const declaredLength = declaredBodyLength(req);
+  if (declaredLength !== null && declaredLength > MAX_REQUEST_BODY_BYTES) {
+    return NextResponse.json({
+      error: `Request body is too large (${Math.round(declaredLength / (1024 * 1024))}MB); attach fewer or smaller images`,
+      code: "prompt_rejected",
+      accepted: false,
+    }, { status: 413 });
   }
 
   const { id } = await params;
