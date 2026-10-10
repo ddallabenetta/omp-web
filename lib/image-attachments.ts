@@ -1,6 +1,62 @@
 export const MAX_ATTACHED_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_ATTACHED_IMAGES = 10;
 
+/**
+ * Wire budget for one message.
+ *
+ * `MAX_ATTACHED_IMAGE_BYTES` bounds a single image, but the transport bounds
+ * the whole request: `JSON.stringify` inlines every image as base64, which
+ * inflates each byte by 4/3. Ten 10 MB attachments therefore serialize to
+ * ~133 MB and are refused by the proxy before any route handler runs — the
+ * per-image limit alone is not reachable. This aggregate is the limit that is
+ * actually enforceable, so it is the one the transport is sized against.
+ */
+export const MAX_ATTACHED_IMAGES_TOTAL_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Longest edge, in pixels, that an attachment is downscaled to before it is
+ * re-encoded. Matches what the CLI already applies to its own attachments, so
+ * a screenshot looks the same whichever surface sent it, and a 12 MP phone
+ * photo lands around 0.5 MB instead of 3 MB.
+ */
+export const ATTACHED_IMAGE_LONGEST_SIDE = 2048;
+
+/**
+ * Per-image target after downscaling. Chosen so that a full message of them
+ * stays inside `MAX_ATTACHED_IMAGES_TOTAL_BYTES` with room to spare.
+ */
+export const ATTACHED_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Smallest `experimental.proxyClientMaxBodySize` that lets a message at the
+ * aggregate budget reach a route handler: the base64 expansion of that budget
+ * plus a margin for the JSON envelope and its fields.
+ *
+ * Not applied to `next.config.ts` by import — the Next config loader cannot be
+ * relied on to resolve this module — so `image-attachments.test.mjs` asserts
+ * the config against this value instead.
+ */
+export const MIN_PROXY_CLIENT_MAX_BODY_SIZE = 32 * 1024 * 1024;
+
+/** Bytes a base64 payload of `decodedBytes` occupies on the wire. */
+export function getBase64WireByteLength(decodedBytes: number): number {
+  if (!Number.isFinite(decodedBytes) || decodedBytes < 0) return 0;
+  return Math.ceil(decodedBytes / 3) * 4;
+}
+
+/** Sum of the decoded sizes of `images`, or 0 for a malformed entry. */
+export function getTotalDecodedByteLength(
+  images: ReadonlyArray<{ data: string }>,
+): number {
+  let total = 0;
+  for (const image of images) {
+    const bytes = getBase64DecodedByteLength(image?.data ?? "");
+    if (bytes === null) return 0;
+    total += bytes;
+  }
+  return total;
+}
+
 export interface Base64ImageAttachment {
   data: string;
   mimeType: string;
@@ -44,6 +100,7 @@ export function validateAgentImages(value: unknown): string | null {
   if (value.length > MAX_ATTACHED_IMAGES) {
     return `A message can include at most ${MAX_ATTACHED_IMAGES} images`;
   }
+  let totalBytes = 0;
   for (const image of value) {
     if (!image || typeof image !== "object" || (image as { type?: unknown }).type !== "image") {
       return "Each attachment must be an image";
@@ -51,6 +108,10 @@ export function validateAgentImages(value: unknown): string | null {
     if (!isBase64ImageWithinLimits(image)) {
       return `Each image must be valid base64 image data of ${MAX_ATTACHED_IMAGE_BYTES / (1024 * 1024)}MB or smaller`;
     }
+    totalBytes += getBase64DecodedByteLength(image.data) ?? 0;
+  }
+  if (totalBytes > MAX_ATTACHED_IMAGES_TOTAL_BYTES) {
+    return `Images in one message must total ${MAX_ATTACHED_IMAGES_TOTAL_BYTES / (1024 * 1024)}MB or less`;
   }
   return null;
 }
