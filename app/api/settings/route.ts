@@ -7,12 +7,15 @@ import {
   getUi,
   hasUi,
   isCredential,
-  SETTINGS_SCHEMA,
   SETTING_TABS,
   TAB_GROUPS,
   TAB_METADATA,
+  findSetting,
+  getSetting,
+  isSettingConfigured,
+  setSetting,
   type SettingPath,
-} from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+} from "@/lib/omp-settings";
 import { getOmpRuntime, getSettingsForCwd } from "@/lib/omp-runtime";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { getAvailableWebThemes, getWebThemeConfig } from "@/lib/omp-theme";
@@ -142,9 +145,9 @@ export async function GET(req: Request) {
           label: ui.label,
           description: ui.description,
           type: fieldType,
-          value: secret ? null : serializableValue(settings.get(path)),
+          value: secret ? null : serializableValue(getSetting(settings, path)),
           defaultValue: secret ? null : serializableValue(getDefault(path)),
-          configured: settings.isConfigured(path),
+          configured: isSettingConfigured(settings, path),
           options: optionsFor(path, themeNames),
           ordered: ui.ordered === true,
           condition: ui.condition,
@@ -168,7 +171,7 @@ export async function GET(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const body = await req.json() as { path?: string; value?: unknown };
-    if (!body.path || !(body.path in SETTINGS_SCHEMA) || !hasUi(body.path as SettingPath)) {
+    if (!body.path || !findSetting(body.path) || !hasUi(body.path as SettingPath)) {
       return NextResponse.json({ error: "Unknown setting" }, { status: 400 });
     }
     const path = body.path as SettingPath;
@@ -180,9 +183,9 @@ export async function PATCH(req: Request) {
       throw new Error("Unknown omp theme");
     }
     const { settings } = await getOmpRuntime();
-    settings.set(path, value as never);
+    setSetting(settings, path, value);
     await settings.flush();
-    return NextResponse.json({ success: true, value: serializableValue(settings.get(path)) });
+    return NextResponse.json({ success: true, value: serializableValue(getSetting(settings, path)) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }

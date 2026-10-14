@@ -161,6 +161,9 @@ fn start_server(app: &mut tauri::App) -> Result<(), String> {
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(no_proxy) = loopback_no_proxy() {
+        command.env("NO_PROXY", &no_proxy).env("no_proxy", &no_proxy);
+    }
     make_process_group(&mut command);
 
     let mut child = command
@@ -303,4 +306,35 @@ fn kill_process_group(pid: u32) {
             .args(["/pid", &pid.to_string(), "/T", "/F"])
             .spawn();
     }
+}
+
+/// Bun 1.4 sends loopback requests through `HTTP_PROXY` as well, which breaks
+/// local providers behind a proxy; it honors `NO_PROXY`, read once at startup,
+/// so the loopback hosts are appended before Bun is spawned (bin/runtime.js
+/// does the same for the npm launcher).
+fn loopback_no_proxy() -> Option<String> {
+    let proxied = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    if !proxied {
+        return None;
+    }
+    let current = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .unwrap_or_default();
+    if current.trim() == "*" {
+        return None;
+    }
+    let mut entries: Vec<String> = current
+        .split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    let before = entries.len();
+    for host in ["localhost", "127.0.0.1", "::1"] {
+        if !entries.iter().any(|entry| entry == host) {
+            entries.push(host.to_string());
+        }
+    }
+    (entries.len() != before).then(|| entries.join(","))
 }

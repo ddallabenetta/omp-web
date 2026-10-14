@@ -1,4 +1,4 @@
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { ModelRegistry, Settings } from "@oh-my-pi/pi-coding-agent";
 import { resolveModelScope, type ScopedModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import type { Api, Model } from "@oh-my-pi/pi-ai";

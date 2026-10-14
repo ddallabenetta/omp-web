@@ -119,7 +119,7 @@ export async function GET(
       abort.signal.addEventListener("abort", cleanup);
 
       try {
-        await authStorage.login(loginId, {
+        await authStorage.oauth.login(loginId, {
           // Every provider prompt (paste-the-code, enterprise URL, ...) becomes
           // a browser input request keyed by a short-lived token.
           onPrompt: async (prompt: OAuthPrompt) => {
