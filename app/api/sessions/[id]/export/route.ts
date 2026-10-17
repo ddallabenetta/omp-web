@@ -7,6 +7,7 @@ import { promisify } from "util";
 import { fileURLToPath, pathToFileURL } from "url";
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
+import { getRpcSession, getFinalRpcSessionId } from "@/lib/rpc-manager";
 import { resolveSessionPath } from "@/lib/session-reader";
 
 const execFileAsync = promisify(execFile);
@@ -114,7 +115,9 @@ export async function GET(
   const inline = new URL(req.url).searchParams.get("inline") === "1";
 
   try {
-    const filePath = await resolveSessionPath(id);
+    const canonicalId = getRpcSession(id)?.sessionId ?? getFinalRpcSessionId(id)
+      ?? (id.startsWith("runtime:") ? undefined : id);
+    const filePath = canonicalId ? await resolveSessionPath(canonicalId) : null;
     if (!filePath) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }

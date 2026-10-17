@@ -8,7 +8,7 @@ import { AccessConfig } from "./AccessConfig";
 import { SearchableSelect } from "./SearchableSelect";
 import { refreshOmpTheme, useTheme } from "@/hooks/useTheme";
 import { refreshDisplaySettings } from "@/hooks/useDisplaySettings";
-import { sendAgentCommand } from "@/lib/agent-client";
+import { sendAgentCommand, type RuntimeSessionBinding } from "@/lib/agent-client";
 import type {
   McpConfigResponse,
   McpScopeConfig,
@@ -26,10 +26,12 @@ type SettingsSection = "models" | "themes" | "skills" | "plugins" | "mcp" | "acc
 interface SettingsConfigProps {
   cwd?: string | null;
   sessionId: string | null;
+  runtimeId?: string;
+  onRuntimeIdentity?: RuntimeSessionBinding["onIdentity"];
   initialSection?: SettingsSection;
   onClose: () => void;
   onModelsChanged?: () => void;
-  onReloaded?: () => void;
+  onReloaded?: (runtimeId: string | null) => void;
 }
 
 const CORE_SECTIONS: Array<{ id: SettingsSection; label: string; icon: string; requiresCwd?: boolean }> = [
@@ -187,7 +189,7 @@ function ThemePreview({ palette }: { palette: WebThemePalette }) {
 /** Settings the web client applies itself, without reloading the agent. */
 const DISPLAY_SETTING_PATHS = new Set(["hideThinkingBlock"]);
 
-export function SettingsConfig({ cwd, sessionId, initialSection = "models", onClose, onModelsChanged, onReloaded }: SettingsConfigProps) {
+export function SettingsConfig({ cwd, sessionId, runtimeId, onRuntimeIdentity, initialSection = "models", onClose, onModelsChanged, onReloaded }: SettingsConfigProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -257,15 +259,16 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
     if (!sessionId) return;
     setReloading(true);
     try {
-      await sendAgentCommand(sessionId, { type: "reload" });
+      const binding = { current: runtimeId ?? null, onIdentity: onRuntimeIdentity };
+      await sendAgentCommand(sessionId, { type: "reload" }, binding);
       setNeedsReload(false);
-      onReloaded?.();
+      onReloaded?.(binding.current);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       setReloading(false);
     }
-  }, [onReloaded, sessionId]);
+  }, [onReloaded, onRuntimeIdentity, runtimeId, sessionId]);
   const selectedTab = settings?.tabs.find((tab) => tab.id === activeTab);
   const pageTitle = query.trim() ? `Search · ${filteredFields.length}` : selectedTab?.label ?? "Settings";
 
@@ -340,14 +343,15 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
           <div className={styles.closeRail}><button type="button" className={styles.closeButton} onClick={close}><span>Close settings</span><span aria-hidden="true">×</span></button></div>
         </aside>
         <main className={styles.content}>
-          {query.trim() ? renderGenericSettings() : section === "models" ? <ModelsConfig cwd={cwd} embedded onClose={close} onModelsChanged={onModelsChanged} /> : section === "themes" ? renderThemeSection() : section === "skills" && cwd ? <SkillsConfig cwd={cwd} embedded onClose={close} /> : section === "plugins" && cwd ? <PluginsConfig cwd={cwd} sessionId={sessionId} embedded onClose={close} onReloaded={onReloaded} /> : section === "mcp" ? <McpSettings cwd={cwd} sessionId={sessionId} onReloaded={onReloaded} /> : section === "access" ? <AccessConfig /> : renderGenericSettings()}
+          {query.trim() ? renderGenericSettings() : section === "models" ? <ModelsConfig cwd={cwd} embedded onClose={close} onModelsChanged={onModelsChanged} /> : section === "themes" ? renderThemeSection() : section === "skills" && cwd ? <SkillsConfig cwd={cwd} embedded onClose={close} /> : section === "plugins" && cwd ? <PluginsConfig cwd={cwd} sessionId={sessionId} runtimeId={runtimeId} onRuntimeIdentity={onRuntimeIdentity} embedded onClose={close} onReloaded={onReloaded} /> : section === "mcp" ? <McpSettings cwd={cwd} sessionId={sessionId} runtimeId={runtimeId} onRuntimeIdentity={onRuntimeIdentity} onReloaded={onReloaded} /> : section === "access" ? <AccessConfig /> : renderGenericSettings()}
         </main>
       </div>
     </div>
   );
 }
 
-function McpSettings({ cwd, sessionId, onReloaded }: { cwd?: string | null; sessionId?: string | null; onReloaded?: () => void }) {
+function McpSettings({ cwd, sessionId, runtimeId, onRuntimeIdentity, onReloaded }: { cwd?: string | null; sessionId?: string | null; runtimeId?: string;
+  onRuntimeIdentity?: RuntimeSessionBinding["onIdentity"]; onReloaded?: (runtimeId: string | null) => void }) {
   const [data, setData] = useState<McpConfigResponse | null>(null);
   const [scope, setScope] = useState<"user" | "project">("user");
   const [selected, setSelected] = useState(0);
@@ -423,8 +427,9 @@ function McpSettings({ cwd, sessionId, onReloaded }: { cwd?: string | null; sess
       if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
       await load();
       if (sessionId) {
-        await sendAgentCommand(sessionId, { type: "reload" });
-        onReloaded?.();
+        const binding = { current: runtimeId ?? null, onIdentity: onRuntimeIdentity };
+        await sendAgentCommand(sessionId, { type: "reload" }, binding);
+        onReloaded?.(binding.current);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));

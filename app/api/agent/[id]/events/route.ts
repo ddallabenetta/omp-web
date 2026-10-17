@@ -51,7 +51,7 @@ export async function GET(
       };
 
       // Send initial connected event
-      encode({ type: "connected", sessionId: id });
+      encode({ type: "connected", sessionId: session.sessionId, runtimeId: session.runtimeId });
 
       const unsubscribe = session.onEvent((event) => {
         const clientEvent = toClientEvent(event);

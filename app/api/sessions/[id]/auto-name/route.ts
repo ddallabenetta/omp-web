@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateSessionTitle } from "@/lib/session-title";
-import { getRpcSession, startRpcSession } from "@/lib/rpc-manager";
+import { getRpcSession, startRpcSession, getFinalRpcSessionId } from "@/lib/rpc-manager";
 import { invalidateSessionListCache, resolveSessionPath } from "@/lib/session-reader";
 
 export async function POST(
@@ -10,15 +10,15 @@ export async function POST(
   const { id } = await params;
 
   try {
-    const filePath = await resolveSessionPath(id);
-    if (!filePath) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    let session = getRpcSession(id);
+    if (!session?.isAlive()) {
+      const canonicalId = id.startsWith("runtime:") ? getFinalRpcSessionId(id) : id;
+      const filePath = canonicalId ? await resolveSessionPath(canonicalId) : undefined;
+      if (!canonicalId || !filePath) {
+        return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      }
+      ({ session } = await startRpcSession(canonicalId, filePath, undefined));
     }
-
-    const existing = getRpcSession(id);
-    const { session } = existing?.isAlive()
-      ? { session: existing }
-      : await startRpcSession(id, filePath, undefined);
 
     // globalThis keeps wrappers alive across dev hot reloads; older instances
     // may predate waitUntilReady(), but those have already completed startup.
@@ -40,7 +40,7 @@ export async function POST(
 
     await session.inner.sessionManager.setSessionName(result.title, "auto");
     invalidateSessionListCache();
-    return NextResponse.json({ title: result.title });
+    return NextResponse.json({ title: result.title, sessionId: session.sessionId, runtimeId: session.runtimeId });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },

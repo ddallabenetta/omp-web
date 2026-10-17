@@ -44,6 +44,10 @@ export async function GET(
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
     const context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
+    // A runtime fallback can differ from the last persisted model selector.
+    if (liveRpc?.inner.model) {
+      context.model = { provider: liveRpc.inner.model.provider, modelId: liveRpc.inner.model.id };
+    }
     const contextUsage = await getHistoricalContextUsage(entries, leafId);
     const totalActiveMs = computeSessionTotalActiveMs(entries);
     const header = sm.getHeader();
@@ -72,7 +76,8 @@ export async function GET(
     } : null;
 
     return NextResponse.json({
-      sessionId: id,
+      sessionId: liveRpc?.sessionId ?? sm.getSessionId(),
+      runtimeId: liveRpc?.runtimeId,
       filePath,
       info,
       leafId,

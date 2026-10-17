@@ -65,3 +65,90 @@ test("does not expose disk-backed actions for transient sessions", () => {
   assert.match(sessionItemSource, /if \(session\.transient\) return;/);
   assert.match(sessionItemSource, /\{hovered && !session\.transient && \(/);
 });
+
+// Execute the actual activity effect with state/notification doubles, so these
+// cases cover unread markers and completion callbacks without copying its logic.
+const activityEffectStart = source.indexOf("    const previousSnapshot = previousActivitySnapshotRef.current;");
+const activityEffectEnd = source.indexOf("\n  }, [activitySnapshot,", activityEffectStart);
+assert.ok(activityEffectStart >= 0 && activityEffectEnd > activityEffectStart);
+const runActivityEffect = new Function(
+  "previousActivitySnapshotRef", "activitySnapshot", "runningSessionIds",
+  "selectedSessionId", "selectedRuntimeId", "allSessions", "setUnreadSessionIds",
+  "loadSessions", "onBackgroundTaskDone",
+  source.slice(activityEffectStart, activityEffectEnd),
+);
+
+const snapshot = (runningSessionIds, sessionIdsByRuntimeId = {}) => ({ runningSessionIds, sessionIdsByRuntimeId });
+const activityCases = [
+  {
+    name: "does not report selected runtime completion when restart loses its relocated identity",
+    previous: snapshot(["a"], { "runtime:selected": "a" }),
+    current: snapshot([]),
+    selectedSessionId: "b", selectedRuntimeId: "runtime:selected",
+    expectedUnread: [],
+  },
+  {
+    name: "still reports another runtime completing in the same restart snapshot",
+    previous: snapshot(["a", "other"], { "runtime:selected": "a", "runtime:other": "other" }),
+    current: snapshot([]),
+    selectedSessionId: "b", selectedRuntimeId: "runtime:selected",
+    expectedUnread: ["other"],
+  },
+  {
+    name: "does not suppress background completion when both runtime IDs are absent",
+    previous: snapshot(["a"]),
+    current: snapshot([]),
+    selectedSessionId: "b",
+    expectedUnread: ["a"],
+  },
+  {
+    name: "keeps ordinary selected transcript completion out of background notifications",
+    previous: snapshot(["a"]),
+    current: snapshot([]),
+    selectedSessionId: "a",
+    expectedUnread: [],
+  },
+  {
+    name: "matches selected completion through the current runtime mapping",
+    previous: snapshot(["a"], { "runtime:selected": "a" }),
+    current: snapshot([], { "runtime:selected": "b" }),
+    selectedSessionId: "a", selectedRuntimeId: "runtime:selected",
+    expectedUnread: [],
+  },
+  {
+    name: "does not complete a relocated runtime that is still running",
+    previous: snapshot(["a"], { "runtime:other": "a" }),
+    current: snapshot(["b"], { "runtime:other": "b" }),
+    selectedSessionId: "selected", selectedRuntimeId: "runtime:selected",
+    initialUnread: ["b"], expectedUnread: [],
+  },
+  {
+    name: "marks the current transcript unread when a background runtime finishes",
+    previous: snapshot(["a"], { "runtime:other": "a" }),
+    current: snapshot([], { "runtime:other": "b" }),
+    selectedSessionId: "selected", selectedRuntimeId: "runtime:selected",
+    expectedUnread: ["b"],
+  },
+];
+
+for (const scenario of activityCases) {
+  test(scenario.name, () => {
+    const previousRef = { current: scenario.previous };
+    let unread = new Set(scenario.initialUnread ?? []);
+    let completionCount = 0;
+    const refreshes = [];
+    runActivityEffect(
+      previousRef, scenario.current, new Set(scenario.current.runningSessionIds),
+      scenario.selectedSessionId, scenario.selectedRuntimeId,
+      ["a", "b", "other", "selected"].map((id) => ({ id })),
+      (update) => { unread = update(unread); },
+      (...args) => { refreshes.push(args); },
+      () => { completionCount += 1; },
+    );
+    assert.deepEqual([...unread], scenario.expectedUnread);
+    const completed = scenario.expectedUnread.length > 0;
+    assert.equal(completionCount, completed ? 1 : 0);
+    assert.deepEqual(refreshes, completed ? [[false, true]] : []);
+    assert.equal(previousRef.current, scenario.current);
+  });
+}

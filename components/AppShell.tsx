@@ -18,6 +18,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
+import { canApplySessionIdentity, type SessionIdentity } from "@/lib/agent-client";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
@@ -27,7 +28,7 @@ import {
   showBrowserNotification,
 } from "@/lib/browser-notifications";
 import { getInitialNavigation } from "@/lib/initial-navigation";
-import { clearLastOpen, getLastOpenSession, setLastOpenSession } from "@/lib/workspace-memory";
+import { clearLastOpen, getLastOpenSession, setLastOpenSession, getSessionContinuation, clearSessionContinuation, rememberSessionContinuation, restoreSessionContinuation } from "@/lib/workspace-memory";
 import {
   getDefaultRightPanelWidth,
   getRightPanelMaxWidth,
@@ -190,6 +191,8 @@ export function AppShell() {
   const autoNameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
   activeSessionIdRef.current = selectedSession?.id ?? null;
+  const activeRuntimeIdRef = useRef(selectedSession?.runtimeId);
+  activeRuntimeIdRef.current = selectedSession?.runtimeId;
   const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
     setSessionStats(stats);
   }, []);
@@ -354,10 +357,10 @@ export function AppShell() {
     const lastOpenSessionId = getLastOpenSession(projectKey);
     if (!lastOpenSessionId) return;
     void fetch("/api/sessions")
-      .then((r) => (r.ok ? (r.json() as Promise<{ sessions: SessionInfo[] }>) : null))
+      .then((r) => (r.ok ? (r.json() as Promise<{ sessions: SessionInfo[]; sessionIdsByRuntimeId?: Record<string, string> }>) : null))
       .then((d) => {
         if (token !== workspaceRestoreTokenRef.current) return; // stale switch
-        const s = d?.sessions.find((x) => x.id === lastOpenSessionId);
+        const s = d ? restoreSessionContinuation(lastOpenSessionId, d.sessions, d.sessionIdsByRuntimeId) : undefined;
         if (!s) {
           // The list loaded but the remembered session is gone — forget it.
           // When the list itself failed (d === null) keep the memory so a
@@ -439,21 +442,21 @@ export function AppShell() {
     // project switch and the just-selected session is cleared.
     activeProjectRootRef.current = session.projectRoot ?? session.cwd;
     invalidateWorkspaceRestore();
-    // Re-clicking the already-open session must not remount the chat and
-    // re-run the full load/positioning cycle. Only skip when the effective
-    // cwd context already matches — otherwise a pending cwd move still needs
-    // the full re-select flow.
+    // A current row with a continuation handle can explicitly reopen history,
+    // including recovery from a handle unknown after a server restart.
+    // Keep ordinary same-session clicks as a no-op.
     if (!isRestore && selectedSession) {
       const sameProject =
         (selectedSession.projectRoot ?? selectedSession.cwd) ===
         (session.projectRoot ?? session.cwd);
-      if (selectedSession.id === session.id && sameProject) {
+      if (selectedSession.id === session.id && sameProject && !selectedSession.runtimeId) {
         if (isMobile) setSidebarOpen(false);
         return;
       }
     }
     setNewSessionCwd(null);
-    setSelectedSession(session);
+    if (!isRestore) clearSessionContinuation();
+    setSelectedSession({ ...session, runtimeId: isRestore ? session.runtimeId ?? getSessionContinuation(session.id) : undefined });
     setSessionKey((k) => k + 1);
     setSystemPrompt(null);
     setInitialSessionRestored(true);
@@ -472,6 +475,7 @@ export function AppShell() {
   }, [invalidateWorkspaceRestore, router, isMobile, selectedSession]);
 
   const handleNewSession = useCallback((_sessionId: string, cwd: string) => {
+    clearSessionContinuation();
     invalidateWorkspaceRestore();
     setSelectedSession(null);
     setNewSessionCwd(cwd);
@@ -553,13 +557,15 @@ export function AppShell() {
     }
   }, [handleSelectSession]);
 
-  const handleAgentEnd = useCallback(() => {
+  const handleAgentEnd = useCallback((completedSessionId?: string) => {
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
-    if (selectedSession) hydrateSelectedSession(selectedSession.id);
+    const targetSession = selectedSession
+      ? { ...selectedSession, id: completedSessionId ?? selectedSession.id }
+      : null;
+    if (targetSession) hydrateSelectedSession(targetSession.id);
 
     if (!shouldShowBrowserNotification()) return;
-    const targetSession = selectedSession;
     deliverSessionNotification({
       targetSession,
       title: targetSession?.name ?? translate("i18n.sessionComplete"),
@@ -581,27 +587,60 @@ export function AppShell() {
     });
   }, [deliverSessionNotification, selectedSession, translate]);
 
+  const handleSessionForked = useCallback((newSessionId: string, runtimeId?: string | null) => {
+    activeSessionIdRef.current = newSessionId;
+    activeRuntimeIdRef.current = runtimeId ?? undefined;
+    invalidateWorkspaceRestore();
+    setRefreshKey((k) => k + 1);
+    if (runtimeId === undefined) setSessionKey((k) => k + 1);
+    setNewSessionCwd(null);
+    setSelectedSession((prev) => ({
+      ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
+      id: newSessionId,
+      runtimeId: runtimeId ?? undefined,
+      transient: false,
+    }));
+    hydrateSelectedSession(newSessionId);
+    router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
+  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+
+  const handleRuntimeIdentity = useCallback((identity: SessionIdentity, request: SessionIdentity) => {
+    const current = { sessionId: activeSessionIdRef.current ?? "", runtimeId: activeRuntimeIdRef.current ?? null };
+    if (!canApplySessionIdentity(current, identity, request)) return false;
+    if (current.sessionId === identity.sessionId && current.runtimeId === identity.runtimeId) return true;
+    chatInputRef.current?.rekeyDraft(current.sessionId, identity.sessionId);
+    if (identity.runtimeId) rememberSessionContinuation(identity.sessionId, identity.runtimeId);
+    else if (request.runtimeId) clearSessionContinuation(undefined, request.runtimeId);
+    handleSessionForked(identity.sessionId, identity.runtimeId);
+    return true;
+  }, [handleSessionForked]);
+
   const handleAutoName = useCallback(async () => {
     const sessionId = selectedSession?.id;
+    const runtimeId = selectedSession?.runtimeId;
     if (!sessionId || autoNameStatus.kind === "naming") return;
     if (autoNameTimerRef.current) clearTimeout(autoNameTimerRef.current);
     setActiveTopPanel(null);
     setAutoNameStatus({ kind: "naming" });
 
     try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/auto-name`, {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(runtimeId ?? sessionId)}/auto-name`, {
         method: "POST",
       });
-      const body = (await response.json().catch(() => ({}))) as { title?: string; error?: string };
+      const body = (await response.json().catch(() => ({}))) as { title?: string; error?: string; sessionId?: string; runtimeId?: string };
       if (!response.ok || !body.title) {
         throw new Error(body.error || `HTTP ${response.status}`);
       }
 
       const title = body.title.trim();
       setRefreshKey((key) => key + 1);
-      if (activeSessionIdRef.current !== sessionId) return;
-      setSelectedSession((current) => current?.id === sessionId ? { ...current, name: title } : current);
-      setSessionStats((current) => current?.sessionId === sessionId ? { ...current, sessionName: title } : current);
+      const canonicalId = body.sessionId ?? sessionId;
+      if (!handleRuntimeIdentity(
+        { sessionId: canonicalId, runtimeId: body.runtimeId ?? null },
+        { sessionId, runtimeId: runtimeId ?? null },
+      )) return;
+      setSelectedSession((current) => current?.id === canonicalId ? { ...current, name: title } : current);
+      setSessionStats((current) => current ? { ...current, sessionId: canonicalId, sessionName: title } : current);
       setAutoNameStatus({ kind: "success" });
       autoNameTimerRef.current = setTimeout(() => setAutoNameStatus({ kind: "idle" }), 1800);
     } catch (error) {
@@ -610,7 +649,7 @@ export function AppShell() {
       setAutoNameStatus({ kind: "error", message });
       autoNameTimerRef.current = setTimeout(() => setAutoNameStatus({ kind: "idle" }), 5000);
     }
-  }, [autoNameStatus.kind, selectedSession?.id]);
+  }, [autoNameStatus.kind, selectedSession?.id, selectedSession?.runtimeId, handleRuntimeIdentity]);
 
   useEffect(() => {
     if (autoNameTimerRef.current) clearTimeout(autoNameTimerRef.current);
@@ -620,20 +659,6 @@ export function AppShell() {
   const handleExplorerRefresh = useCallback(() => {
     setExplorerRefreshKey((k) => k + 1);
   }, []);
-
-  const handleSessionForked = useCallback((newSessionId: string) => {
-    invalidateWorkspaceRestore();
-    setRefreshKey((k) => k + 1);
-    setSessionKey((k) => k + 1);
-    setNewSessionCwd(null);
-    setSelectedSession((prev) => ({
-      ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
-      id: newSessionId,
-      transient: false,
-    }));
-    hydrateSelectedSession(newSessionId);
-    router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
 
   const handleInitialRestoreDone = useCallback(() => {
     setInitialSessionRestored(true);
@@ -711,7 +736,7 @@ export function AppShell() {
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
     window.open(
-      `/api/sessions/${encodeURIComponent(selectedSession.id)}/export?inline=1`,
+      `/api/sessions/${encodeURIComponent(selectedSession.runtimeId ?? selectedSession.id)}/export?inline=1`,
       "_blank",
       "noopener,noreferrer",
     );
@@ -789,6 +814,7 @@ export function AppShell() {
     <>
       <SessionSidebar
         selectedSessionId={selectedSession?.id ?? null}
+        selectedRuntimeId={selectedSession?.runtimeId}
         optimisticSession={selectedSession}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
@@ -1706,6 +1732,8 @@ export function AppShell() {
             <div className="subagent-column">
               <SubagentPanel
                 sessionId={selectedSession?.id ?? null}
+                runtimeId={selectedSession?.runtimeId}
+                onRuntimeIdentity={handleRuntimeIdentity}
                 cwd={selectedSession?.cwd ?? effectiveNewSessionCwd ?? undefined}
                 subagents={subagents}
               />
@@ -1814,9 +1842,16 @@ export function AppShell() {
       <SettingsConfig
         cwd={projectTrustCwd}
         sessionId={selectedSession?.id ?? null}
+        runtimeId={selectedSession?.runtimeId}
+        onRuntimeIdentity={handleRuntimeIdentity}
         onClose={() => setSettingsConfigOpen(false)}
         onModelsChanged={() => setModelsRefreshKey((key) => key + 1)}
-        onReloaded={() => setSessionKey((key) => key + 1)}
+        onReloaded={(runtimeId) => {
+          const ownsSession = runtimeId
+            ? activeRuntimeIdRef.current === runtimeId
+            : activeSessionIdRef.current === selectedSession?.id && !activeRuntimeIdRef.current;
+          if (ownsSession) setSessionKey((key) => key + 1);
+        }}
       />
     )}
     {projectTrustDialogOpen && projectTrustCwd && (

@@ -65,7 +65,7 @@ export async function POST(req: Request) {
     // that share a key onto one session. Date.now() (ms resolution) collides for
     // requests in the same millisecond, merging two new sessions into one.
     const tempKey = `__new__${randomUUID()}`;
-    const { session, realSessionId } = await startRpcSession(tempKey, "", cwd, {
+    const { session } = await startRpcSession(tempKey, "", cwd, {
       ...(toolNames ? { toolNames } : {}),
       ...(provider && modelId ? { initialModel: { provider, modelId } } : {}),
       ...(explicitThinkingLevel ? { thinkingLevel: explicitThinkingLevel } : {}),
@@ -86,7 +86,8 @@ export async function POST(req: Request) {
     if (promptCommand.type === "ensure_session") {
       return NextResponse.json({
         success: true,
-        sessionId: realSessionId,
+        sessionId: session.sessionId,
+        runtimeId: session.runtimeId,
         data: null,
         model: state.model
           ? { provider: state.model.provider, modelId: state.model.id }
@@ -101,7 +102,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      sessionId: realSessionId,
+      sessionId: session.sessionId,
+      runtimeId: session.runtimeId,
       data: result,
       model: state.model
         ? { provider: state.model.provider, modelId: state.model.id }

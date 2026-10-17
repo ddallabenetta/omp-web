@@ -4,7 +4,7 @@ import {
   listAllSessions,
   mergeSessionLists,
 } from "@/lib/session-reader";
-import { getRpcSessionInfos, getRunningRpcSessionIds } from "@/lib/rpc-manager";
+import { getRpcSessionInfos, getRpcSessionActivitySnapshot } from "@/lib/rpc-manager";
 import { readArchivedIds } from "@/lib/session-archive";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +21,7 @@ export async function GET(req: Request) {
     const sessions = mergeSessionLists(persistedSessions, runtimeSessions)
       .filter((s) => (showArchived ? archived.has(s.id) : !archived.has(s.id)));
     return NextResponse.json(
-      { sessions, runningSessionIds: getRunningRpcSessionIds() },
+      { sessions, ...getRpcSessionActivitySnapshot() },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

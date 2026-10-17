@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { sendAgentCommand } from "@/lib/agent-client";
+import { sendAgentCommand, type RuntimeSessionBinding } from "@/lib/agent-client";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { PluginPackageInfo, PluginsResponse } from "@/lib/api-types";
 import { useI18n } from "@/hooks/useI18n";
@@ -615,14 +615,18 @@ function PackageDetail({
 export function PluginsConfig({
   cwd,
   sessionId,
+  runtimeId,
+  onRuntimeIdentity,
   onClose,
   onReloaded,
   embedded = false,
 }: {
   cwd: string;
   sessionId: string | null;
+  runtimeId?: string;
+  onRuntimeIdentity?: RuntimeSessionBinding["onIdentity"];
   onClose: () => void;
-  onReloaded?: () => void;
+  onReloaded?: (runtimeId: string | null) => void;
   embedded?: boolean;
 }) {
   const isMobile = useIsMobile();
@@ -741,8 +745,9 @@ export function PluginsConfig({
     setActionError(null);
     setActionMessage(null);
     try {
-      await sendAgentCommand(sessionId, { type: "reload" });
-      onReloaded?.();
+      const binding = { current: runtimeId ?? null, onIdentity: onRuntimeIdentity };
+      await sendAgentCommand(sessionId, { type: "reload" }, binding);
+      onReloaded?.(binding.current);
       await loadPlugins();
       setActionMessage("Session reloaded.");
     } catch (err) {
@@ -750,7 +755,7 @@ export function PluginsConfig({
     } finally {
       setBusyKey(null);
     }
-  }, [loadPlugins, onReloaded, sessionId]);
+  }, [loadPlugins, onReloaded, onRuntimeIdentity, runtimeId, sessionId]);
 
   const addBusy = busyKey?.startsWith("install:") ?? false;
 

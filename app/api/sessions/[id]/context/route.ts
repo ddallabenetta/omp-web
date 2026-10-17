@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { resolveSessionPath, buildSessionContext, getHistoricalContextUsage } from "@/lib/session-reader";
-import { getRpcSession } from "@/lib/rpc-manager";
+import { getRpcSession, getFinalRpcSessionId } from "@/lib/rpc-manager";
 
 export async function GET(
   req: Request,
@@ -14,9 +14,11 @@ export async function GET(
   const deferToolResultImages = url.searchParams.has("deferMedia");
 
   try {
-    const rpc = getRpcSession(id);
+    const directRpc = getRpcSession(id);
+    const canonicalId = directRpc?.sessionId ?? getFinalRpcSessionId(id) ?? id;
+    const rpc = directRpc ?? getRpcSession(canonicalId);
     const liveRpc = rpc?.isAlive() ? rpc : undefined;
-    const filePath = liveRpc ? null : await resolveSessionPath(id);
+    const filePath = liveRpc ? null : await resolveSessionPath(canonicalId);
     if (!liveRpc && !filePath) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
@@ -30,6 +32,8 @@ export async function GET(
     const contextUsage = await getHistoricalContextUsage(entries, leafId);
 
     return NextResponse.json({
+      sessionId: liveRpc?.sessionId ?? sm.getSessionId(),
+      runtimeId: liveRpc?.runtimeId ?? null,
       context,
       ...(contextUsage ? { contextUsage } : {}),
     });

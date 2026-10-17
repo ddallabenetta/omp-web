@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
-import { startRpcSession, getRpcSession } from "@/lib/rpc-manager";
+import { startRpcSession, getRpcSession, getFinalRpcSessionId } from "@/lib/rpc-manager";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
 // POST /api/agent/[id] - Send a command to an existing session
@@ -28,7 +28,15 @@ export async function POST(
     if (existing?.isAlive()) {
       const result = await existing.send(body);
       promptAccepted = body.type === "prompt";
-      return NextResponse.json({ success: true, data: result });
+      existing.syncSessionIdentity();
+      return NextResponse.json({ success: true, data: result, sessionId: existing.sessionId, runtimeId: existing.runtimeId });
+    }
+
+    if (id.startsWith("runtime:")) {
+      return NextResponse.json({
+        error: "Runtime session expired", code: "runtime_expired", accepted: false,
+        sessionId: getFinalRpcSessionId(id),
+      }, { status: 404 });
     }
 
     const filePath = await resolveSessionPath(id);
@@ -45,7 +53,8 @@ export async function POST(
     const result = await session.send(body);
     promptAccepted = body.type === "prompt";
 
-    return NextResponse.json({ success: true, data: result });
+    session.syncSessionIdentity();
+    return NextResponse.json({ success: true, data: result, sessionId: session.sessionId, runtimeId: session.runtimeId });
   } catch (error) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
@@ -64,9 +73,13 @@ export async function GET(
   const { id } = await params;
 
   try {
-    const session = getRpcSession(id);
+    let session = getRpcSession(id);
     if (!session || !session.isAlive()) {
-      return NextResponse.json({ running: false });
+      const sessionId = getFinalRpcSessionId(id);
+      session = sessionId ? getRpcSession(sessionId) : undefined;
+      if (!session?.isAlive()) {
+        return NextResponse.json({ running: false, ...(sessionId ? { state: { sessionId } } : {}) });
+      }
     }
 
     const state = await session.send({ type: "get_state" });

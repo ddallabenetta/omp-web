@@ -280,6 +280,7 @@ export async function getAvailableSlashCommands(session: AgentSessionLike): Prom
 // ============================================================================
 
 export class AgentSessionWrapper {
+  readonly runtimeId = `runtime:${randomUUID()}`;
   private listeners: EventListener[] = [];
   private pendingUiResponses = new Map<string, PendingUiResponse>();
   private pendingUiRequests = new Map<string, AgentEvent>();
@@ -724,7 +725,26 @@ export class AgentSessionWrapper {
   }
 
 
+  syncSessionIdentity(): void {
+    const registry = globalThis.__ompSessions;
+    const currentId = this.sessionId;
+    if (!registry || registry.get(currentId) === this) return;
+    let moved = false;
+    for (const [id, session] of registry) {
+      if (session !== this) continue;
+      registry.delete(id);
+      moved = true;
+    }
+    if (!moved) return;
+    registry.set(currentId, this);
+    if (this.sessionFile) cacheSessionPath(currentId, this.sessionFile);
+    invalidateSessionListCache();
+    // Existing streams still hold this wrapper after its registry key moves.
+    for (const listener of this.listeners) listener({ type: "session_changed", sessionId: currentId, runtimeId: this.runtimeId });
+  }
+
   private emit(event: AgentEvent): void {
+    this.syncSessionIdentity();
     for (const l of this.listeners) l(event);
   }
 
@@ -836,6 +856,7 @@ export class AgentSessionWrapper {
         const contextUsage = this.inner.getContextUsage();
         return {
           sessionId: this.inner.sessionId,
+          runtimeId: this.runtimeId,
           sessionFile: this.inner.sessionFile ?? "",
           isStreaming: this.inner.isStreaming,
           isPromptRunning: this.promptRunning,
@@ -1174,6 +1195,10 @@ export class AgentSessionWrapper {
   destroy(): void {
     if (!this._alive) return;
     this._alive = false;
+    const finalIds = globalThis.__ompFinalSessionIds ??= new Map<string, string>();
+    finalIds.set(this.runtimeId, this.sessionId);
+    // A bounded continuation record, never a historical-session alias.
+    while (finalIds.size > 1024) finalIds.delete(finalIds.keys().next().value!);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.inner.isBashRunning) this.inner.abortBash();
     this.unsubscribe?.();
@@ -1188,6 +1213,11 @@ export class AgentSessionWrapper {
       void this.inner.dispose?.();
     } finally {
       try {
+        // Runtime fallback can move this wrapper away from its startup ID.
+        // Remove only this instance, preserving separately reopened sessions.
+        for (const [id, session] of globalThis.__ompSessions ?? []) {
+          if (session === this) globalThis.__ompSessions?.delete(id);
+        }
         this.onDestroyCallback?.();
       } finally {
         notifyRunningChange();
@@ -1545,6 +1575,7 @@ export class AgentSessionWrapper {
 
 declare global {
   var __ompSessions: Map<string, AgentSessionWrapper> | undefined;
+  var __ompFinalSessionIds: Map<string, string> | undefined;
   var __ompStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
   var __ompStartingSessionCwds: Map<string, number> | undefined;
   var __ompRunningListeners: Set<(ids: string[]) => void> | undefined;
@@ -1557,6 +1588,17 @@ function getRegistry(): Map<string, AgentSessionWrapper> {
     process.once("exit", cleanup);
     process.once("SIGINT", cleanup);
     process.once("SIGTERM", cleanup);
+  }
+  for (const session of globalThis.__ompSessions.values()) {
+    if (Object.getPrototypeOf(session) === AgentSessionWrapper.prototype) continue;
+    // HMR retains pre-identity wrappers, including their SDK run and listeners.
+    // Upgrade only wrapper instances carrying the existing private state.
+    if (!Array.isArray(Reflect.get(session, "listeners"))) continue;
+    if (!session.runtimeId) Object.defineProperty(session, "runtimeId", { value: `runtime:${randomUUID()}` });
+    // The old manager callback deleted the startup ID even after relocation.
+    // Current destroy() removes entries by wrapper identity instead.
+    Reflect.set(session, "onDestroyCallback", null);
+    Object.setPrototypeOf(session, AgentSessionWrapper.prototype);
   }
   return globalThis.__ompSessions;
 }
@@ -1591,8 +1633,22 @@ function trackStartingSession(cwd: string): () => void {
   };
 }
 
+export function getFinalRpcSessionId(runtimeId: string): string | undefined {
+  return globalThis.__ompFinalSessionIds?.get(runtimeId);
+}
+
 export function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {
-  return getRegistry().get(sessionId);
+  const registry = getRegistry();
+  // Canonical history IDs never redirect to another transcript. Only an
+  // explicit runtime handle follows the wrapper when the SDK changes its ID.
+  for (const candidate of [...registry.values()]) {
+    if (candidate.isAlive()) candidate.syncSessionIdentity?.();
+  }
+  const registered = registry.get(sessionId);
+  if (registered?.isAlive() && registered.sessionId === sessionId) return registered;
+  return [...registry.values()].find(
+    (candidate) => candidate.isAlive() && (candidate.sessionId === sessionId || candidate.runtimeId === sessionId),
+  );
 }
 
 function runtimeMessageText(entry: SessionMessageEntry): string {
@@ -1678,6 +1734,19 @@ export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
   return sessions.length;
 }
 
+// Include idle wrappers so a run that changes ID and finishes between polls
+// is attributed to its final transcript rather than its historical ID.
+export function getRpcSessionActivitySnapshot() {
+  const runningSessionIds = new Set<string>();
+  const sessionIdsByRuntimeId: Record<string, string> = Object.fromEntries(globalThis.__ompFinalSessionIds ?? []);
+  for (const session of getRegistry().values()) {
+    if (!session.isAlive()) continue;
+    sessionIdsByRuntimeId[session.runtimeId] = session.sessionId;
+    if (session.isRunning()) runningSessionIds.add(session.sessionId);
+  }
+  return { runningSessionIds: [...runningSessionIds], sessionIdsByRuntimeId };
+}
+
 export function getRunningRpcSessionIds(): string[] {
   const ids = new Set<string>();
   for (const [sessionId, session] of getRegistry()) {
@@ -1747,8 +1816,8 @@ export async function startRpcSession(
   const registry = getRegistry();
   const locks = getLocks();
 
-  const existing = registry.get(sessionId);
-  if (existing?.isAlive()) return { session: existing, realSessionId: sessionId };
+  const existing = getRpcSession(sessionId);
+  if (existing?.isAlive()) return { session: existing, realSessionId: existing.sessionId };
 
   const inflight = locks.get(sessionId);
   if (inflight) return inflight;
@@ -1867,7 +1936,6 @@ export async function startRpcSession(
       const realSessionFile = inner.sessionFile as string | undefined;
       if (realSessionFile) cacheSessionPath(realSessionId, realSessionFile);
 
-      wrapper.onDestroy(() => registry.delete(realSessionId));
       registry.set(realSessionId, wrapper);
       wrapper.beginExtensionBinding({ forceEmptySystemPrompt: toolNames?.length === 0 });
 

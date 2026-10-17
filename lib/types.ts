@@ -392,6 +392,8 @@ export interface SessionTreeNode {
 }
 
 export interface SessionInfo {
+  /** Client continuation handle; never a persisted transcript ID or history alias. */
+  runtimeId?: string;
   path: string;
   id: string;
   cwd: string;
