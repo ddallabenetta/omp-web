@@ -46,7 +46,7 @@ const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024;
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-  mjs: "javascript", cjs: "javascript", py: "python", rb: "ruby",
+  mjs: "javascript", cjs: "javascript", py: "python", rb: "ruby", jl: "julia",
   go: "go", rs: "rust", java: "java", kt: "kotlin", swift: "swift",
   c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
   html: "html", htm: "html", css: "css", scss: "css", less: "css",
