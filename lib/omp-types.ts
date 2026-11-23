@@ -1,11 +1,14 @@
 import type {
   AgentSessionEvent,
+  ExtensionUISelectItem,
   SessionManager,
   Settings,
   SlashCommandInfo as OmpSlashCommandInfo,
   Theme,
 } from "@oh-my-pi/pi-coding-agent";
+import type { CompactOptions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
+import type { FormDialogAnswer } from "./form-dialog";
 import type { Goal } from "@oh-my-pi/pi-tui/tools/goal";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "./types";
 
@@ -105,7 +108,8 @@ type WidgetOptionsLike = {
 export interface ExtensionUiContextLike {
   readonly timeoutStartsOnPresentation?: boolean;
   askDialog?(questions: ExtensionAskDialogQuestion[], opts?: DialogOptionsLike): Promise<ExtensionAskDialogResult | undefined>;
-  select(title: string, options: string[], opts?: DialogOptionsLike): Promise<string | undefined>;
+  formDialog?(html: string, opts?: DialogOptionsLike): Promise<FormDialogAnswer | undefined>;
+  select(title: string, options: ExtensionUISelectItem[], opts?: DialogOptionsLike): Promise<string | undefined>;
   confirm(title: string, message: string, opts?: DialogOptionsLike): Promise<boolean>;
   input(title: string, placeholder?: string, opts?: DialogOptionsLike): Promise<string | undefined>;
   editor(title: string, prefill?: string, opts?: DialogOptionsLike): Promise<string | undefined>;
@@ -180,16 +184,9 @@ export interface AgentSessionLike {
   resolveRoleModel(role: string): ModelLike | undefined;
   navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<NavigateTreeResult>;
   branch(entryId: string): Promise<{ cancelled: boolean }>;
-  /**
-   * Generate a handoff document with a oneshot LLM call and commit it as this
-   * session's compaction entry. omp 18 made this in-place: the session keeps
-   * its id and file, and the document becomes the summary that recent history
-   * is kept against. Resolves to `undefined` when the handoff is cancelled.
-   */
-  handoff(customInstructions?: string): Promise<{ document: string; savedPath?: string } | undefined>;
   setThinkingLevel(level: string | undefined, persist?: boolean): void;
   configuredThinkingLevel(): string | undefined;
-  compact(customInstructions?: string): Promise<unknown>;
+  compact(customInstructions?: string, options?: CompactOptions): Promise<unknown>;
   getSessionStats(): Omit<SessionStatsInfo, "sessionName">;
   getLastAssistantText(): string | undefined;
   setAutoCompactionEnabled(enabled: boolean): void;

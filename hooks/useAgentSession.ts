@@ -130,7 +130,7 @@ function mergeSubagentSnapshots(current: SubagentSnapshot[], incoming: SubagentS
 
 type ExtensionUiDialogRequest = Extract<
   ExtensionUiRequest,
-  { method: "select" | "confirm" | "input" | "editor" | "ask" | "plan_review" }
+  { method: "select" | "confirm" | "input" | "editor" | "ask" | "form" | "plan_review" }
 >;
 type ExtensionUiCustomRequest = Extract<ExtensionUiRequest, { method: "custom" }>;
 export type NoticeType = "info" | "success" | "warning" | "error";
@@ -1012,6 +1012,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "input":
       case "editor":
       case "ask":
+      case "form":
       case "plan_review":
         setExtensionDialog(request);
         break;
@@ -1365,9 +1366,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         dispatch({ type: "start" });
         break;
       case "agent_end":
-        // One logical prompt can emit multiple agent_end events before retrying,
-        // compacting, or continuing messages queued by extension handlers.
-        // Keep the stream open until prompt_done/agent_settled and the idle grace.
+        // Non-terminal ends precede retries, compaction, or queued continuations;
+        // only the terminal end settles the run.
         if (!agentRunningRef.current) break;
         setAgentPhase(null);
         setRetryInfo(null);
@@ -1392,25 +1392,21 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             })
             .catch(() => {});
         }
+        if (event.isTerminal !== false) {
+          const agentWasActive = sdkAgentActiveRef.current;
+          sdkAgentActiveRef.current = false;
+          if (agentWasActive && !rpcPromptPendingRef.current) {
+            const sid = sessionIdRef.current;
+            const wasRunning = settleUiStage();
+            setIsCompacting(false);
+            if (sid) scheduleEventStreamClose(sid);
+            if (wasRunning) onAgentEnd?.(sid ?? undefined);
+          }
+        }
         break;
       case "goal_status":
         setGoalStatus((event.status as GoalStatusInfo | null | undefined) ?? null);
         break;
-      case "agent_settled": {
-        const agentWasActive = sdkAgentActiveRef.current;
-        sdkAgentActiveRef.current = false;
-        if (!agentWasActive || rpcPromptPendingRef.current) break;
-
-        const sid = sessionIdRef.current;
-        const wasRunning = settleUiStage();
-        setIsCompacting(false);
-        if (sid) {
-          void loadSession(sid);
-          scheduleEventStreamClose(sid);
-        }
-        if (wasRunning) onAgentEnd?.(sessionIdRef.current ?? undefined);
-        break;
-      }
       case "prompt_done":
         {
           const runId = promptRunIdRef.current;
@@ -1422,9 +1418,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
           const sid = sessionIdRef.current;
           if (sid) void loadSession(sid);
-          // An extension-injected agent may already have started before the
-          // command's prompt_done. Keep that active stage visible and let its
-          // agent_settled event perform the next completion transition.
+          // A newer continuation may have started before this prompt_done.
+          // Its terminal agent_end owns the next completion transition.
           if (!sdkAgentActiveRef.current) {
             settleUiStage();
             if (sid) scheduleEventStreamClose(sid);

@@ -18,15 +18,11 @@ test("keeps the session event stream open through the idle grace window", () => 
   );
   const agentEndSource = source.slice(
     source.indexOf('case "agent_end"'),
-    source.indexOf('case "agent_settled"'),
+    source.indexOf('case "goal_status"'),
   );
   const agentStartSource = source.slice(
     source.indexOf('case "agent_start"'),
     source.indexOf('case "agent_end"'),
-  );
-  const agentSettledSource = source.slice(
-    source.indexOf('case "agent_settled"'),
-    source.indexOf('case "prompt_done"'),
   );
   const promptDoneSource = source.slice(
     source.indexOf('case "prompt_done"'),
@@ -45,8 +41,9 @@ test("keeps the session event stream open through the idle grace window", () => 
   assert.doesNotMatch(finishSource, /closeEvents\(\)/);
   assert.doesNotMatch(agentEndSource, /closeEvents\(\)/);
   assert.match(agentStartSource, /cancelEventStreamGrace\(\)/);
-  assert.match(agentSettledSource, /scheduleEventStreamClose\(sid\)/);
-  assert.match(agentSettledSource, /onAgentEnd\?\.\(sessionIdRef\.current \?\? undefined\)/);
+  assert.match(agentEndSource, /if \(event\.isTerminal !== false\) \{[\s\S]*?scheduleEventStreamClose\(sid\)/);
+  assert.match(agentEndSource, /onAgentEnd\?\.\(sid \?\? undefined\)/);
+  assert.doesNotMatch(source, /agent_settled/);
   assert.match(promptDoneSource, /notifyPromptStage\(runId\)/);
   assert.match(promptDoneSource, /scheduleEventStreamClose\(sid\)/);
   assert.match(sendSource, /const definitivelyRejected = !promptRequestStarted \|\| isPromptRejectedError\(e\)/);

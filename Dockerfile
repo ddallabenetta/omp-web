@@ -1,7 +1,7 @@
 # omp-web serves its API on Bun, not Node: the omp SDK (`@oh-my-pi/pi-*`) is
 # published as TypeScript sources that import `bun:` builtins, so both stages
 # start from the Bun release that package.json's `engines.bun` floor requires.
-ARG BUN_VERSION=1.3.14
+ARG BUN_VERSION=1.4.4
 
 # ---------------------------------------------------------------------------
 # Build: install dependencies and produce the Next.js production build.

@@ -582,6 +582,8 @@ export function AppShell() {
       title: translate("i18n.attentionNeeded"),
       body: request.method === "custom"
         ? translate("i18n.extensionInputNeeded")
+        : request.method === "form"
+        ? translate("chat.agentQuestion")
         : request.title,
       tag: `pi-extension-ui:${request.id}`,
     });

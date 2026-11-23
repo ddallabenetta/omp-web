@@ -23,6 +23,7 @@ import { MessageView } from "./MessageView";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
+import { FormDialog } from "./FormDialog";
 import { OmpWordmark } from "./OmpWordmark";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
@@ -932,7 +933,7 @@ function NoticeShelf({ notices, floating = false, align = "left" }: { notices: N
 
 type ExtensionDialogRequest = Extract<
   ExtensionUiRequest,
-  { method: "select" | "confirm" | "input" | "editor" | "ask" | "plan_review" }
+  { method: "select" | "confirm" | "input" | "editor" | "ask" | "form" | "plan_review" }
 >;
 
 function ExtensionDialog({
@@ -973,6 +974,10 @@ function ExtensionDialog({
       onRespond(request, { value });
     }
   };
+  if (request.method === "form") {
+    return <FormDialog request={request} onRespond={(response) => onRespond(request, response)} />;
+  }
+
   if (request.method === "ask") {
     const canSubmit = request.questions.every((question) =>
       (selectedOptions[question.id]?.length ?? 0) > 0
@@ -1367,7 +1372,7 @@ function ExtensionDialog({
           )}
           {request.method === "select" && (
             <div style={{ display: "grid", gap: 8 }}>
-              {request.options.map((option) => (
+              {request.options.map((option, index) => (
                 <button
                   key={option}
                   onClick={() => onRespond(request, { value: option })}
@@ -1384,6 +1389,11 @@ function ExtensionDialog({
                   }}
                 >
                   {option}
+                  {request.optionDetails?.[index]?.description && (
+                    <span style={{ display: "block", marginTop: 3, color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
+                      {request.optionDetails[index].description}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>

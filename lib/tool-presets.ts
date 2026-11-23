@@ -2,6 +2,8 @@ export interface ToolEntry {
   name: string;
   description: string;
   active: boolean;
+  /** Enabled but not declared at the top level (bash commands or eval/codemode tools). */
+  declarationHidden?: boolean;
 }
 
 export type ToolPreset = "none" | "default" | "full";
