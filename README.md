@@ -21,7 +21,7 @@ It is not a separate agent: omp-web runs omp's own SDK in-process, against the s
 
 ## Quick Start
 
-omp-web serves its API on **Bun**, because that is what the omp SDK requires (it is published as TypeScript sources and imports `bun:` builtins). Install Bun 1.3.14 or newer:
+omp-web serves its API on **Bun**, because that is what the omp SDK requires (it is published as TypeScript sources and imports `bun:` builtins). Install Bun 1.4.4 or newer:
 
 ```bash
 curl -fsSL https://bun.sh/install | bash        # macOS / Linux

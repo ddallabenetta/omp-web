@@ -8,7 +8,7 @@ const { delimiter, join } = require("path");
 const { homedir } = require("os");
 
 const MIN_NODE_VERSION = "22.19.0";
-const MIN_BUN_VERSION = "1.3.14";
+const MIN_BUN_VERSION = "1.4.4";
 
 function parseVersion(version) {
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? ""));

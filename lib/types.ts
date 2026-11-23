@@ -1,4 +1,5 @@
 // Types mirrored from pi-mono coding-agent session-manager
+import type { FormDialogForm } from "./form-dialog-types";
 
 export interface SessionHeader {
   type: "session";
@@ -191,6 +192,10 @@ export interface SubagentSnapshot {
 }
 
 
+export interface ExtensionUiSelectOptionDetail {
+  description?: string;
+}
+
 export type ExtensionUiRequest =
   | {
       type: "extension_ui_request";
@@ -198,6 +203,8 @@ export type ExtensionUiRequest =
       method: "select";
       title: string;
       options: string[];
+      /** Positional presentation metadata, as omp's RPC mode sends it. */
+      optionDetails?: ExtensionUiSelectOptionDetail[];
       timeout?: number;
       expiresAt?: number;
     }
@@ -206,6 +213,15 @@ export type ExtensionUiRequest =
       id: string;
       method: "ask";
       questions: ExtensionAskDialogQuestion[];
+      timeout?: number;
+      expiresAt?: number;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "form";
+      form: FormDialogForm;
+      mediaPath?: string;
       timeout?: number;
       expiresAt?: number;
     }
@@ -288,7 +304,7 @@ export type ExtensionUiRequest =
 
 export type BlockingExtensionUiRequest = Extract<
   ExtensionUiRequest,
-  { method: "select" | "confirm" | "input" | "editor" | "custom" }
+  { method: "select" | "confirm" | "input" | "editor" | "form" | "custom" }
 >;
 
 export type ExtensionUiResponse =

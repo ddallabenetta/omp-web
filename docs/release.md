@@ -53,7 +53,7 @@ git status --short --branch
 git log --oneline --decorate -5
 gh auth status
 npm whoami
-bun --version   # the published .next is built with Bun; engines.bun requires 1.3.14+
+bun --version   # the published .next is built with Bun; engines.bun requires 1.4.4+
 node -e "const p=require('./package.json'); console.log(p.version)"
 ```
 
